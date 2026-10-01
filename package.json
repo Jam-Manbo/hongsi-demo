@@ -1,0 +1,14 @@
+{
+  "name": "hongsi-demo",
+  "private": true,
+  "type": "module",
+  "engines": { "node": "24.x" },
+  "scripts": {
+    "sync": "node scripts/sync-upstream.mjs",
+    "check": "node scripts/sync-upstream.mjs --check && npm --prefix app run check",
+    "build": "npm run check && npm --prefix app run build",
+    "dev": "npm --prefix app run dev",
+    "preview": "npm --prefix app run preview"
+  },
+  "license": "AGPL-3.0-only"
+}
