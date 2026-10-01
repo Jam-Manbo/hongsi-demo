@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { itemStatus, schoolFinished } from '../lib/colors';
+  import { itemStatus, isFinished } from '../lib/colors';
   import { dday, dueDate, dueTime } from '../lib/format';
   import type { CalendarItem } from '../lib/types';
   import Icon from './Icon.svelte';
@@ -20,7 +20,7 @@
     ontoggle: (item: CalendarItem) => void;
   } = $props();
 
-  const finished = $derived(schoolFinished(item));
+  const finished = $derived(isFinished(item));
   const status = $derived(itemStatus(item));
   const d = $derived(item.due ? dday(item.due) : null);
 </script>
@@ -47,7 +47,7 @@
       {#if item.due}<span>· {showDate ? dueDate(item.due) : ''} {dueTime(item.due)} 마감</span>{/if}
     </span>
   </button>
-  <div class="side">
+  <div class="agenda-side">
     <span class="chip {status.tone}">{status.label}</span>
     {#if d && !finished}<span class="dday {d.tone}">{d.label}</span>{/if}
   </div>
@@ -131,14 +131,6 @@
   .course {
     overflow: hidden;
     text-overflow: ellipsis;
-  }
-
-  .side {
-    flex: none;
-    display: grid;
-    justify-items: center;
-    text-align: center;
-    gap: 4px;
   }
 
   .dday {

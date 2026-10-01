@@ -1,3 +1,7 @@
+<script module lang="ts">
+  const openPanels = new Set<HTMLElement>();
+</script>
+
 <script lang="ts">
   import type { Snippet } from 'svelte';
   import { MediaQuery } from 'svelte/reactivity';
@@ -9,7 +13,9 @@
     open = $bindable(false),
     title = '',
     titleMeta = '',
+    titleIcon = '',
     wide = false,
+    layer = 0,
     onclose,
     children,
     footer,
@@ -17,7 +23,9 @@
     open: boolean;
     title?: string;
     titleMeta?: string;
+    titleIcon?: string;
     wide?: boolean;
+    layer?: number;
     onclose?: () => void;
     children: Snippet;
     footer?: Snippet;
@@ -57,18 +65,24 @@
   }
 
   function onkeydown(e: KeyboardEvent) {
-    if (open && e.key === 'Escape') close();
+    if (open && e.key === 'Escape' && !e.defaultPrevented && panel === [...openPanels].at(-1)) {
+      e.preventDefault();
+      close();
+    }
   }
 
   $effect(() => {
-    if (open) {
+    if (open && panel) {
+      const currentPanel = panel;
+      openPanels.add(currentPanel);
       resetDrag();
       const prev = document.activeElement as HTMLElement | null;
-      queueMicrotask(() => panel?.focus());
+      queueMicrotask(() => currentPanel.focus());
       document.body.style.overflow = 'hidden';
       return () => {
-        document.body.style.overflow = '';
-        prev?.focus?.();
+        openPanels.delete(currentPanel);
+        document.body.style.overflow = openPanels.size ? 'hidden' : '';
+        if (prev?.isConnected) prev.focus();
       };
     }
   });
@@ -77,9 +91,10 @@
 <svelte:window {onkeydown} />
 
 {#if open}
-  <div class="backdrop" use:portal transition:fade={{ duration: 160 }} onclick={close} aria-hidden="true"></div>
+  <div class="backdrop" style:z-index={60 + layer * 2} use:portal transition:fade={{ duration: 160 }} onclick={close} aria-hidden="true"></div>
   <div
     class="sheet"
+    style:z-index={61 + layer * 2}
     class:wide
     class:dragging
     style:translate={phone.current ? `0 ${dragY}px` : undefined}
@@ -94,7 +109,8 @@
   >
     <div class="grip" aria-hidden="true"></div>
     <header>
-      <h2 class:with-meta={!!titleMeta}>
+      <h2 class:with-meta={!!titleMeta} class:with-icon={!!titleIcon}>
+        {#if titleIcon}<span class="title-icon"><Icon name={titleIcon} size={21} /></span>{/if}
         {#if titleMeta}<span>{title}</span><span class="title-meta">{titleMeta}</span>{:else}{title}{/if}
       </h2>
       <button class="icon-btn" onclick={close} aria-label="닫기"><Icon name="close" /></button>
@@ -160,6 +176,19 @@
     align-items: baseline;
     gap: 8px;
     min-width: 0;
+  }
+
+  h2.with-icon {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    min-width: 0;
+  }
+
+  .title-icon {
+    display: flex;
+    flex: none;
+    color: var(--primary);
   }
 
   .title-meta {

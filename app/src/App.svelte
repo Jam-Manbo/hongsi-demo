@@ -2,6 +2,8 @@
   import { onMount, untrack } from 'svelte';
   import { watchAppUpdates } from './lib/app-update.svelte';
   import AppUpdate from './components/AppUpdate.svelte';
+  import NotificationPermission from './components/NotificationPermission.svelte';
+  import DoneConfirm from './components/DoneConfirm.svelte';
   import DownloadPage from './pages/DownloadPage.svelte';
   import { ApiError, api, isApp, native } from './lib/api';
   import { isPending } from './lib/colors';
@@ -10,7 +12,7 @@
   import { syncSeatReminders } from './lib/seat.svelte';
   import { syncDueReminders } from './lib/reminders';
   import { initNotifications, notificationState, refreshNotifications, takeNotificationIntent } from './lib/notify';
-  import { background, enableBackgroundByDefault, refreshBackground, syncBackgroundPreferences } from './lib/background.svelte';
+  import { enableBackgroundByDefault, refreshBackground, syncBackgroundPreferences } from './lib/background.svelte';
   import { openNotification } from './lib/notification-navigation';
   import { seatPrefs } from './lib/seat.svelte';
   import { refreshState, refreshTab } from './lib/refresh.svelte';
@@ -124,14 +126,13 @@
 
   $effect(() => {
     if (!app.profile) return;
-    settings.alertLeads; seatPrefs.alerts; background.status?.registered;
+    settings.alertLeads; seatPrefs.alerts;
     void untrack(syncBackgroundPreferences);
   });
 
   $effect(() => {
     if (!app.profile) return;
     const remembered = app.remembered;
-    notificationState.permission; notificationState.enabled; background.status; background.busy;
     void untrack(() => enableBackgroundByDefault(remembered));
   });
 
@@ -280,10 +281,12 @@
     </nav>
   </div>
   <ProfileSheet bind:open={profileOpen} onlogout={logout} />
+  <DoneConfirm />
 
   {/key}
 {/if}
 <AppUpdate />
+<NotificationPermission />
 
 <style>
   :global(html:has(.shell)),
