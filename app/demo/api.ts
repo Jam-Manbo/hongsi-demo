@@ -18,13 +18,18 @@ function activeSeat() {
   if (seat && seat.expiresAt <= seconds()) { data().seat = null; persist(); return null; }
   return seat;
 }
-function validateTodo(body: TodoInput) {
+function validateAlertLeads(value: unknown): number[] | null {
+  if (value == null) return null;
+  if (!Array.isArray(value) || value.length > 5 || new Set(value).size !== value.length || value.some(min => ![1440, 180, 60, 10, 0].includes(min))) invalid('알림 시간이 올바르지 않아요.');
+  return [...value];
+}
+function validateTodo(body: TodoInput): TodoInput {
   const title = String(body.title ?? '').trim();
   if (!title) invalid('할 일 제목을 입력해 주세요.');
   if (title.length > 200) invalid('제목은 200자 이하로 입력해 주세요.');
   if (body.courseId !== null && !courses.some(c => c.id === body.courseId)) invalid('과목을 확인해 주세요.');
   if (body.dueAt !== null && !Number.isFinite(body.dueAt)) invalid('마감 시간을 확인해 주세요.');
-  return { title, note: String(body.note ?? ''), courseId: body.courseId, parentKey: body.parentKey, dueAt: body.dueAt, allDay: !!body.allDay, notify: !!body.notify };
+  return { title, note: String(body.note ?? ''), courseId: body.courseId, parentKey: body.parentKey, dueAt: body.dueAt, allDay: !!body.allDay, notify: !!body.notify, alertLeads: validateAlertLeads(body.alertLeads) };
 }
 function handle(method: string, path: string, body: any = {}): unknown {
   const url = new URL(path, 'https://demo.invalid');
@@ -45,12 +50,13 @@ function handle(method: string, path: string, body: any = {}): unknown {
     const items = [...d.calendar.items].sort((a, b) => (a.due ?? Infinity) - (b.due ?? Infinity));
     return { ...d.calendar, items, fetchedAt: seconds() };
   }
-  let m = /^\/api\/calendar\/items\/(.+)\/(done|alert|verify)$/.exec(route);
+  let m = /^\/api\/calendar\/items\/(.+)\/(done|alert|alert-leads|verify)$/.exec(route);
   if (m) {
     const i = d.calendar.items.find(i => i.key === m![1]);
     if (!i) throw new ApiError(404, 'not_found', '항목을 찾지 못했어요.');
     if (m[2] === 'done') { i.doneOverride = typeof body.done === 'boolean' ? body.done : null; i.done = i.doneOverride ?? finished(i); return { key: i.key, done: i.done }; }
     if (m[2] === 'alert') { i.alert = !!body.on; return { key: i.key, on: i.alert }; }
+    if (m[2] === 'alert-leads') { i.alertLeads = validateAlertLeads(body.leads); return { key: i.key, leads: i.alertLeads }; }
     return { key: i.key, status: i.status, finished: finished(i) };
   }
   m = /^\/api\/assign\/(\d+)\/submission$/.exec(route);

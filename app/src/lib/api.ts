@@ -1,9 +1,11 @@
 import { isApp } from './env';
 import { reportSchool, reportServer } from './net.svelte';
-import { inSession } from './session';
+import { inSession, sessionUser } from './session';
 import type {
   ActiveLectures,
   AttendanceCourse,
+  AttendanceReceipt,
+  AttendanceSubmission,
   BoardArticle,
   CalendarData,
   ClassNotification,
@@ -34,6 +36,12 @@ export class ApiError extends Error {
 export { isApp };
 
 type Envelope = { status: number; body: unknown; server?: boolean | null };
+const sessionRevokedListeners = new Set<() => void>();
+
+export function onSessionRevoked(listener: () => void) {
+  sessionRevokedListeners.add(listener);
+  return () => sessionRevokedListeners.delete(listener);
+}
 
 const SCHOOL_PATH = /^\/api\/(calendar(\?|$)|calendar\/items\/[^/]+\/verify|attendance\/|timetable|notifications|assign\/|modules\/|board\/)/;
 
@@ -47,14 +55,21 @@ function note(path: string, status: number, data: unknown, server?: boolean | nu
   } else {
     reportServer(!(data === null && status >= 502 && status <= 504));
   }
-  if (!SCHOOL_PATH.test(path)) return;
+  if (path.startsWith('/api/attendance/receipts') || !SCHOOL_PATH.test(path)) return;
   const code = errorOf(data)?.code ?? '';
   if (status < 400) reportSchool(true);
   else if (code === 'school_unreachable' || code === 'school_error') reportSchool(false);
 }
 
 export async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
-  return inSession((check) => sendRequest<T>(method, path, body, check));
+  try {
+    return await inSession((check) => sendRequest<T>(method, path, body, check));
+  } catch (e) {
+    if (e instanceof ApiError && e.status === 401 && e.code === 'session_revoked') {
+      sessionRevokedListeners.forEach((listener) => listener());
+    }
+    throw e;
+  }
 }
 
 async function sendRequest<T>(method: string, path: string, body: unknown, check: () => void): Promise<T> {
@@ -106,6 +121,7 @@ export const api = {
   login: (id: string, password: string, remember: boolean) =>
     request<{ profile: Profile }>('POST', '/api/auth/login', { id, password, remember }),
   logout: () => request<{ ok: boolean }>('POST', '/api/auth/logout'),
+  logoutAll: () => request<{ ok: boolean }>('POST', '/api/auth/logout-all'),
   me: () => request<{ profile: Profile; remembered: boolean }>('GET', '/api/me'),
   verifyItem: (key: string, courseId: number) =>
     request<{ key: string; status: string; finished: boolean }>(
@@ -126,7 +142,9 @@ export const api = {
 
   activeLectures: () => request<ActiveLectures>('GET', '/api/attendance/active'),
   submitAttendance: (lectureKey: string, code: string, latitude: number, longitude: number) =>
-    request<{ message: string }>('POST', '/api/attendance/submit', { lectureKey, code, latitude, longitude }),
+    request<AttendanceSubmission>('POST', '/api/attendance/submit', { lectureKey, code, latitude, longitude }),
+  attendanceReceipts: () => request<AttendanceReceipt[]>('GET', '/api/attendance/receipts'),
+  shareAttendanceReceipt: (receipt: AttendanceReceipt) => request<{ ok: boolean }>('PUT', '/api/attendance/receipts', { receipt, account: sessionUser() }),
   attendanceStatus: () => request<AttendanceCourse[]>('GET', '/api/attendance/status'),
   attendanceCourse: (code: string) =>
     request<AttendanceCourse>('GET', `/api/attendance/course?code=${encodeURIComponent(code)}`),
@@ -135,6 +153,8 @@ export const api = {
   calendar: (refresh = false) => request<CalendarData>('GET', `/api/calendar${refresh ? '?refresh=1' : ''}`),
   setDone: (key: string, done: boolean | null) =>
     request<{ key: string; done: boolean }>('PUT', `/api/calendar/items/${encodeURIComponent(key)}/done`, { done }),
+  setAlertLeads: (key: string, leads: number[] | null) =>
+    request<{ key: string; leads: number[] | null }>('PUT', `/api/calendar/items/${encodeURIComponent(key)}/alert-leads`, { leads }),
   setAlert: (key: string, on: boolean) =>
     request<{ key: string; on: boolean }>('PUT', `/api/calendar/items/${encodeURIComponent(key)}/alert`, { on }),
 

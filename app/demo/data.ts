@@ -17,7 +17,7 @@ export function calendarSeed(): CalendarData {
     const due = offset === null ? null : dayAt(offset);
     const status = submitted ? 'submitted' : offset !== null && offset < 0 ? 'overdue' : 'not_submitted';
     items.push({ key: `assign:${n}`, kind: 'assignment', courseId: index % 6 + 1, title: `과제${n}`,
-      start: dayAt(-7, 9, 0), due, status, done: submitted, doneOverride: null, alert: true,
+      start: dayAt(-7, 9, 0), due, status, done: submitted, doneOverride: null, alert: true, alertLeads: null,
       url: `/mod/assign/view.php?id=${n}`, introHtml: `<p>과목${index % 6 + 1}의 과제${n} 안내입니다.</p><p>첨부된 안내 자료를 확인하고 파일을 제출해 보세요. 데모에서 선택한 파일은 서버로 전송되지 않습니다.</p>`,
       attachments: [sampleFile(`과제${n}_안내.txt`)], watch: null, lateUntil: due === null ? null : due + 7 * 86400,
       modified: seconds() - 3600, firstSeen: null, firstDue: null, firstIntroHtml: null, changeCount: 0,
@@ -26,7 +26,7 @@ export function calendarSeed(): CalendarData {
   [0, 1, 2, 4, 6, 9, -2, 12].forEach((offset, index) => {
     const n = index + 1, status = n === 3 ? 'done' : n === 2 ? 'partial' : offset < 0 ? 'missed' : n === 8 ? 'upcoming' : 'todo';
     items.push({ key: `vod:${n}`, kind: 'vod', courseId: index % 6 + 1, title: `강의${n}`,
-      start: dayAt(n === 8 ? 5 : -3, 9, 0), due: dayAt(offset), status, done: status === 'done', doneOverride: null, alert: true,
+      start: dayAt(n === 8 ? 5 : -3, 9, 0), due: dayAt(offset), status, done: status === 'done', doneOverride: null, alert: true, alertLeads: null,
       url: `/mod/vod/view.php?id=${n}`, introHtml: `<p>과목${index % 6 + 1}의 강의${n}입니다.</p><p>시청 시간과 이수 상태를 보여 주는 가상 강의입니다.</p>`,
       attachments: [], watch: { required: '30분', watched: status === 'done' ? '30분' : status === 'partial' ? '12분' : '0분', mark: status === 'done' ? '출석' : '' },
       lateUntil: null, modified: null, firstSeen: null, firstDue: null, firstIntroHtml: null, changeCount: 0, submit: null });
@@ -35,7 +35,7 @@ export function calendarSeed(): CalendarData {
 }
 export function todoSeed(): Todo[] {
   return [0, 1, 3, -1].map((offset, i) => ({ id: i + 1, title: `할 일${i + 1}`, note: `할 일${i + 1}의 메모입니다. 자유롭게 수정해 보세요.`,
-    courseId: i === 1 ? 1 : null, parentKey: i === 1 ? 'assign:1' : null, dueAt: dayAt(offset, 0, 0), allDay: true, doneAt: null, notify: true }));
+    courseId: i === 1 ? 1 : null, parentKey: i === 1 ? 'assign:1' : null, dueAt: dayAt(offset, 0, 0), allDay: true, doneAt: null, notify: true, alertLeads: null }));
 }
 export function timetableSeed(): Timetable {
   const weekday = (new Date(Date.now() + 9 * 3600_000).getUTCDay() + 6) % 7;

@@ -14,6 +14,8 @@ export type ClassSlot = {
 export type Timetable = { slots: ClassSlot[] };
 
 export type MarkKind = 'present' | 'late' | 'absent' | 'excused' | 'none' | 'planned' | 'other';
+export type AttendanceReceipt = { lecture: ActiveLecture; date: string; kind: 'present' | 'late' | 'excused'; confirmedAt: number };
+export type AttendanceSubmission = { message: string; receipt: AttendanceReceipt | null; synced: boolean };
 export type AttendanceMark = { date: string; mark: string; kind: MarkKind };
 export type AttendanceWeek = { week: number; sessions: AttendanceMark[] };
 export type AttendanceSummary = {
@@ -58,6 +60,7 @@ export type CalendarItem = {
   done: boolean;
   doneOverride: boolean | null;
   alert: boolean;
+  alertLeads: number[] | null;
   url: string;
   introHtml: string | null;
   attachments: Attachment[];
@@ -137,6 +140,7 @@ export type Todo = {
   allDay: boolean;
   doneAt: number | null;
   notify: boolean;
+  alertLeads: number[] | null;
 };
 export type TodoInput = Omit<Todo, 'id' | 'doneAt'>;
 

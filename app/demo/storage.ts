@@ -33,6 +33,8 @@ export function data() {
   if (memory?.hour === hour()) return memory;
   const saved = read(localStorage, DATA);
   memory = saved?.version === 2 && saved.hour === hour() && Array.isArray(saved.calendar?.items) && Array.isArray(saved.todos) && Array.isArray(saved.attendance) ? saved : seed();
+  for (const item of memory!.calendar.items) item.alertLeads ??= null;
+  for (const todo of memory!.todos) todo.alertLeads ??= null;
   return memory!;
 }
 export function persist() {

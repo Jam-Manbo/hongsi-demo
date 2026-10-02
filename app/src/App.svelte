@@ -11,7 +11,7 @@
   import { errorText } from './lib/net.svelte';
   import { syncSeatReminders } from './lib/seat.svelte';
   import { syncDueReminders } from './lib/reminders';
-  import { initNotifications, notificationState, refreshNotifications, takeNotificationIntent } from './lib/notify';
+  import { initNotifications, notificationState, refreshNotifications, showFirstNotificationPermission, takeNotificationIntent } from './lib/notify';
   import { enableBackgroundByDefault, refreshBackground, syncBackgroundPreferences } from './lib/background.svelte';
   import { openNotification } from './lib/notification-navigation';
   import { seatPrefs } from './lib/seat.svelte';
@@ -89,8 +89,14 @@
     const stopUpdates = watchAppUpdates();
     let disposed = false;
     let cleanup = () => {};
-    void initNotifications().then((fn) => { if (disposed) fn(); else cleanup = fn; });
-    void boot();
+    const notificationReady = initNotifications().then((fn) => { if (disposed) fn(); else cleanup = fn; });
+    void boot().then(async () => {
+      await notificationReady;
+      if (!disposed) {
+        await showFirstNotificationPermission();
+        if (!disposed && app.profile && !app.loggingOut) await refreshBackground();
+      }
+    });
     return () => { disposed = true; cleanup(); stopUpdates(); };
   });
 
@@ -101,10 +107,10 @@
   });
 
   $effect(() => {
-    if (!app.profile) return;
+    if (!app.profile || app.loggingOut) return;
     let last = 0;
     const refresh = async (force = true) => {
-      if (document.visibilityState !== 'visible' || Date.now() - last < 30_000) return;
+      if (app.loggingOut || document.visibilityState !== 'visible' || Date.now() - last < 30_000) return;
       last = Date.now();
       await Promise.all([calendar.load(force), todos.load(force), seatSession.load(force)]);
       await refreshNotifications();
@@ -125,13 +131,13 @@
   });
 
   $effect(() => {
-    if (!app.profile) return;
+    if (!app.profile || app.loggingOut) return;
     settings.alertLeads; seatPrefs.alerts;
     void untrack(syncBackgroundPreferences);
   });
 
   $effect(() => {
-    if (!app.profile) return;
+    if (!app.profile || app.loggingOut) return;
     const remembered = app.remembered;
     void untrack(() => enableBackgroundByDefault(remembered));
   });
@@ -176,10 +182,15 @@
     return () => document.removeEventListener('click', onClick);
   });
 
-  async function logout() {
-    profileOpen = false;
-    await logoutSession();
-    toast('로그아웃했어요', 'success');
+  async function logout(scope: 'device' | 'all') {
+    if (app.loggingOut) return;
+    try {
+      await logoutSession(scope);
+      profileOpen = false;
+      toast(scope === 'all' ? '모든 기기에서 로그아웃했어요' : '로그아웃했어요', 'success');
+    } catch (e) {
+      toast(`${scope === 'all' ? '모든 기기 로그아웃을' : '로그아웃을'} 완료하지 못했어요. ${errorText(e, '연결을 확인한 뒤 다시 시도해 주세요.')}`, 'error', 7000);
+    }
   }
 </script>
 
@@ -280,7 +291,7 @@
       {/each}
     </nav>
   </div>
-  <ProfileSheet bind:open={profileOpen} onlogout={logout} />
+  <ProfileSheet bind:open={profileOpen} onlogout={() => logout('device')} onlogoutall={() => logout('all')} />
   <DoneConfirm />
 
   {/key}
