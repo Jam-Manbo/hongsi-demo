@@ -1,4 +1,6 @@
-import { ApiError, api, isApp, native } from './api';
+import { api, isApp, native } from './api';
+import { connectionError, responseError, responseFormat } from './api-error';
+import { beginCalendarChange } from './calendar-sync.svelte';
 import { errorText, reportServer, writeBlocked } from './net.svelte';
 import { schoolFinished } from './colors';
 import { calendar, handleAuthError } from './store.svelte';
@@ -45,6 +47,7 @@ async function saveDone(item: CalendarItem, done: boolean) {
   if (done === current.done) return;
   const before = { done: current.done, doneOverride: current.doneOverride };
   const override = done === schoolFinished(current) ? null : done;
+  const finishChange = beginCalendarChange();
   saving.add(item.key);
   update(item.key, { done, doneOverride: override });
   try {
@@ -55,6 +58,7 @@ async function saveDone(item: CalendarItem, done: boolean) {
     if (!handleAuthError(e)) toastOnce(errorText(e, '저장하지 못했어요'), 'error');
   } finally {
     if (isCurrentSession(version)) saving.delete(item.key);
+    finishChange();
   }
 }
 
@@ -64,6 +68,7 @@ async function saveItemAlert(item: CalendarItem, patch: Partial<CalendarItem>, s
   const version = sessionVersion();
   const current = calendar.data?.items.find((i) => i.key === item.key) ?? item;
   const before = { alert: current.alert, alertLeads: current.alertLeads ?? null };
+  const finishChange = beginCalendarChange();
   savingAlerts.add(item.key);
   update(item.key, patch);
   try {
@@ -74,6 +79,7 @@ async function saveItemAlert(item: CalendarItem, patch: Partial<CalendarItem>, s
     if (!handleAuthError(e)) toastOnce(errorText(e, '저장하지 못했어요'), 'error');
   } finally {
     if (isCurrentSession(version)) savingAlerts.delete(item.key);
+    finishChange();
   }
 }
 
@@ -129,11 +135,11 @@ async function browserDownload(src: FileSource, name: string) {
       res = await fetch(api.fileUrl(src), { credentials: 'same-origin' });
     } catch {
       reportServer(false);
-      throw new ApiError(0, 'offline', '서버에 연결하지 못했어요');
+      throw connectionError(false, { method: 'GET', path: api.fileUrl(src) });
     }
     if (!res.ok) {
       const body = await res.json().catch(() => null);
-      throw new ApiError(res.status, body?.error?.code ?? 'error', body?.error?.message ?? '파일을 받지 못했어요');
+      throw responseError(res.status, body, { method: 'GET', path: api.fileUrl(src), format: responseFormat(res.headers.get('content-type')) });
     }
     return res.blob();
   });
@@ -145,6 +151,25 @@ async function browserDownload(src: FileSource, name: string) {
   a.click();
   a.remove();
   setTimeout(() => URL.revokeObjectURL(url), 30_000);
+}
+
+const fileMessages = new Set([
+  '자동 로그인 정보를 읽지 못했어요.', '자동 로그인 정보를 저장하지 못했어요.', '자동 로그인 정보를 삭제하지 못했어요.',
+  '다운로드 폴더를 찾지 못했어요.', '다운로드 폴더를 열지 못했어요.', '폴더를 만들지 못했어요.',
+  '파일을 저장하지 못했어요.', '파일이 없어요.', '열 수 없는 경로예요.',
+  '파일이나 링크를 열지 못했어요.', '링크를 열 브라우저가 없어요.', '이 파일 형식을 열 수 있는 앱이 없어요.',
+  '파일 앱을 열지 못했어요.', '폴더를 열지 못했어요.', '파일을 다운받을 수 없어요.', '다운로드에 실패했어요.',
+  '활동을 찾지 못했어요.', '글을 찾지 못했어요.', '로그인이 필요해요.', '다시 로그인해 주세요.',
+  '학교 서버가 응답하지 않아요.', '인터넷에 연결되어 있지 않아요.', '홍시 서버에 연결할 수 없어요.',
+  '동기화 서버에 연결할 수 없어요.', '서버에 연결하지 못했어요.', '응답이 늦어지고 있어요.',
+  '서버 응답을 확인하지 못했어요.', '잠시 후 다시 시도해 주세요.', '이 요청은 허용되지 않았어요.',
+  '파일이나 요청의 용량이 너무 커요.',
+]);
+
+export function fileErrorText(error: unknown, fallback: string): string {
+  const text = errorText(error, fallback).trim();
+  const message = text.endsWith('.') ? text : `${text}.`;
+  return fileMessages.has(message) ? message : fallback;
 }
 
 export async function downloadFile(src: FileSource, name: string, course: string): Promise<DownloadRecord | null> {
@@ -167,7 +192,7 @@ export async function downloadFile(src: FileSource, name: string, course: string
     toast(isApp ? '다운로드 폴더 안의 ‘홍시’ 폴더에 저장했어요' : '다운로드했어요', 'success');
     return record;
   } catch (e) {
-    if (!handleAuthError(e)) toastOnce(errorText(e, '파일을 받지 못했어요'), 'error');
+    if (!handleAuthError(e)) toastOnce(fileErrorText(e, '다운로드에 실패했어요.'), 'error');
     return null;
   } finally {
     if (isCurrentSession(version)) downloads.busy = '';
@@ -183,7 +208,7 @@ export async function openDownload(d: DownloadRecord) {
     if (isApp && d.path) await native.openFile(d.path);
     else window.open(api.fileUrl(sourceOf(d), true), '_blank', 'noopener');
   } catch (e) {
-    toast(e instanceof Error ? e.message : '열지 못했어요', 'error');
+    toast(fileErrorText(e, '파일이나 링크를 열지 못했어요.'), 'error');
   }
 }
 
@@ -191,6 +216,6 @@ export async function revealDownload(d: DownloadRecord) {
   try {
     if (d.path) await native.revealFile(d.path);
   } catch (e) {
-    toast(e instanceof Error ? e.message : '폴더를 열지 못했어요', 'error');
+    toast(fileErrorText(e, '폴더를 열지 못했어요.'), 'error');
   }
 }

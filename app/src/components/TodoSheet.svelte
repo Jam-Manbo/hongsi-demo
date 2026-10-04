@@ -1,5 +1,7 @@
 <script lang="ts">
+  import { untrack } from 'svelte';
   import { isApp } from '../lib/api';
+  import { settings } from '../lib/settings.svelte';
   import { removeTodo, saveTodo, fromUnix, toUnix } from '../lib/todos.svelte';
   import TimeWheel from './TimeWheel.svelte';
   import DateField from './DateField.svelte';
@@ -31,9 +33,16 @@
   let notify = $state(true);
   let alertLeads = $state<number[] | null>(null);
   let busy = $state(false);
+  let discardOpen = $state(false);
+  let initialValues = $state('');
+  const formValues = $derived(JSON.stringify({
+    title, note, courseId, date, time, parentKey, notify,
+    alertLeads: [...(alertLeads ?? settings.alertLeads)].sort((a, b) => b - a),
+  }));
   let titleEl: HTMLInputElement | undefined = $state();
 
   $effect(() => {
+    discardOpen = false;
     if (!open) return;
     const due = todo?.dueAt ? fromUnix(todo.dueAt) : null;
     title = todo?.title ?? '';
@@ -44,6 +53,7 @@
     parentKey = todo ? todo.parentKey : (draft.parentKey ?? null);
     notify = todo?.notify ?? true;
     alertLeads = todo?.alertLeads ? [...todo.alertLeads] : null;
+    initialValues = untrack(() => formValues);
     if (!todo) queueMicrotask(() => titleEl?.focus());
   });
 
@@ -51,16 +61,32 @@
     if (!date) time = '';
   });
 
+  function canClose() {
+    if (busy) return false;
+    if (formValues === initialValues) return true;
+    discardOpen = true;
+    return false;
+  }
+
+  function requestClose() {
+    if (canClose()) open = false;
+  }
+
+  function discard() {
+    discardOpen = false;
+    open = false;
+  }
+
   async function submit(e: SubmitEvent) {
     e.preventDefault();
-    if (!title.trim()) return;
+    if (!title.trim() || !date) return;
     busy = true;
     const ok = await saveTodo(todo?.id ?? null, {
       title: title.trim(),
       note: note.trim(),
       courseId,
       parentKey,
-      dueAt: date ? toUnix(date, time) : null,
+      dueAt: toUnix(date, time),
       allDay: !time,
       notify,
       alertLeads,
@@ -76,7 +102,7 @@
   }
 </script>
 
-<Sheet bind:open title={todo ? '할 일' : '할 일 추가'}>
+<Sheet bind:open title={todo ? '할 일' : '할 일 추가'} onbeforeclose={canClose}>
   <form id="todo-form" class="form" onsubmit={submit}>
     {#if parentKey && draft.parentTitle && !todo}
       <p class="linked"><Icon name="file" size={15} />{draft.parentTitle} 관련 할 일</p>
@@ -108,7 +134,7 @@
     {#if isApp}
       <div class="field">
         <span>날짜</span>
-        <DateField bind:value={date} />
+        <DateField bind:value={date} required />
       </div>
       {#if date}
         <div class="field">
@@ -124,7 +150,7 @@
       <div class="row">
         <div class="field">
           <span>날짜</span>
-          <DateField bind:value={date} />
+          <DateField bind:value={date} required />
         </div>
         <label class="field">
           <span>시간</span>
@@ -148,13 +174,23 @@
     {#if todo}
       <button class="btn btn-danger w1" onclick={remove} aria-label="할 일 지우기"><Icon name="close" size={18} />지우기</button>
     {:else}
-      <button class="btn btn-ghost w1" onclick={() => (open = false)}>취소</button>
+      <button class="btn btn-ghost w1" onclick={requestClose}>취소</button>
     {/if}
-    <button class="btn btn-primary w2" form="todo-form" disabled={busy || !title.trim()}>{busy ? '저장 중…' : '저장'}</button>
+    <button class="btn btn-primary w2" form="todo-form" disabled={busy || !title.trim() || !date}>{busy ? '저장 중…' : '저장'}</button>
+  {/snippet}
+</Sheet>
+
+<Sheet bind:open={discardOpen} title="작성중인 내용을 버릴까요?" layer={1} showClose={false}>
+  <p class="discard-description">저장하지 않은 변경사항이 있어요.</p>
+  {#snippet footer()}
+    <button class="btn btn-danger w1" onclick={discard}>삭제</button>
+    <button class="btn btn-primary w1" onclick={() => (discardOpen = false)}>계속 작성</button>
   {/snippet}
 </Sheet>
 
 <style>
+  .discard-description { font-size: 14px; line-height: 1.65; color: var(--text-2); }
+
   .form {
     display: grid;
     gap: 16px;

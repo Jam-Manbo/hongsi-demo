@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount, untrack } from 'svelte';
+  import { watchCalendarState } from './lib/calendar-sync.svelte';
   import { watchAppUpdates } from './lib/app-update.svelte';
   import { publishWidgetTheme, publishWidgets, widgetSnapshot, openWidgetIntent } from './lib/widgets';
   import AppUpdate from './components/AppUpdate.svelte';
@@ -17,7 +18,7 @@
   import { openNotification } from './lib/notification-navigation';
   import { seatPrefs } from './lib/seat.svelte';
   import { refreshState, refreshTab } from './lib/refresh.svelte';
-  import { settings } from './lib/settings.svelte';
+  import { settings, accountPreferences, watchAccountPreferences } from './lib/settings.svelte';
   import {
     app,
     attendance,
@@ -36,7 +37,6 @@
   import { TABS, go, openSeats, route, toast } from './lib/ui.svelte';
   import Avatar from './components/Avatar.svelte';
   import ConnBanner from './components/ConnBanner.svelte';
-  import SchoolReconnect from './components/SchoolReconnect.svelte';
   import Icon from './components/Icon.svelte';
   import Downloads from './components/Downloads.svelte';
   import Notices from './components/Notices.svelte';
@@ -51,7 +51,7 @@
   import SeatsPage from './pages/SeatsPage.svelte';
 
   const TITLES = { home: '홈', calendar: '캘린더', seats: '열람실', attendance: '출결', meals: '학식' } as const;
-  const downloadPage = !isApp && location.pathname.replace(/\/$/, '') === '/download';
+  const downloadPage = !isApp && ['/download', '/download/versions', '/download/ios'].includes(location.pathname.replace(/\/$/, ''));
 
   const weekDue = $derived.by(() => {
     const now = Date.now() / 1000;
@@ -135,16 +135,16 @@
     const refresh = async (force = true) => {
       if (app.loggingOut || document.visibilityState !== 'visible' || Date.now() - last < 30_000) return;
       last = Date.now();
-      await Promise.all([calendar.load(force), todos.load(force), seatSession.load(force)]);
+      await Promise.all([calendar.load(force), todos.load(true), seatSession.load(true)]);
       await refreshNotifications();
       await refreshBackground();
     };
     void untrack(() => { void refreshBackground(true); void refresh(false); });
-    const resume = () => { void refresh(); };
+    const resume = () => { void refresh(false); };
     window.addEventListener('focus', resume);
     window.addEventListener('online', resume);
     document.addEventListener('visibilitychange', resume);
-    const tick = setInterval(resume, 5 * 60_000);
+    const tick = setInterval(() => { void refresh(); }, 5 * 60_000);
     return () => {
       clearInterval(tick);
       window.removeEventListener('focus', resume);
@@ -155,7 +155,7 @@
 
   $effect(() => {
     if (!app.profile || app.loggingOut) return;
-    settings.alertLeads; seatPrefs.alerts;
+    seatPrefs.alerts;
     void untrack(syncBackgroundPreferences);
   });
 
@@ -176,6 +176,15 @@
     };
   });
 
+  $effect(() => {
+    if (!app.account || app.loggingOut) return;
+    return untrack(() => {
+      const stopPreferences = watchAccountPreferences();
+      const stopCalendar = watchCalendarState();
+      return () => { stopPreferences(); stopCalendar(); };
+    });
+  });
+
   let topH = $state(64);
 
   $effect(() => {
@@ -184,6 +193,7 @@
 
   $effect(() => {
     const on = !!app.profile;
+    if (on && !accountPreferences.loaded) return;
     syncDueReminders(
       on ? (calendar.data?.items ?? []) : [],
       on ? (todos.data ?? []) : [],
@@ -211,14 +221,13 @@
       await logoutSession(scope);
       profileOpen = false;
       toast(scope === 'all' ? '모든 기기에서 로그아웃했어요' : '로그아웃했어요', 'success');
-    } catch (e) {
-      toast(`${scope === 'all' ? '모든 기기 로그아웃을' : '로그아웃을'} 완료하지 못했어요. ${errorText(e, '연결을 확인한 뒤 다시 시도해 주세요.')}`, 'error', 7000);
+    } catch {
+      toast('로그아웃을 완료하지 못했어요.', 'error', 7000);
     }
   }
 </script>
 
 <Toasts />
-{#if app.profile && !isApp}<SchoolReconnect />{/if}
 
 {#if downloadPage}
   <DownloadPage />

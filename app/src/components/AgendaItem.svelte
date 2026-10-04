@@ -36,21 +36,23 @@
     {#if item.done}<Icon name="tick" size={15} stroke={2.6} />{/if}
   </button>
   <button class="main" onclick={() => onopen(item)}>
-    <span class="title">
-      <span class="kind" aria-label={item.kind === 'vod' ? '온라인 강의' : '과제'}>
-        <Icon name={item.kind === 'vod' ? 'play' : 'file'} size={15} />
+    <span class="copy">
+      <span class="title">
+        <span class="text"><span class="kind" role="img" aria-label={item.kind === 'vod' ? '온라인 강의' : '과제'}><Icon name={item.kind === 'vod' ? 'play' : 'file'} size={15} /></span>{item.title}</span>
       </span>
-      <span class="text">{item.title}</span>
-    </span>
-    <span class="meta">
       <span class="course">{course}</span>
-      {#if item.due}<span>· {showDate ? dueDate(item.due) : ''} {dueTime(item.due)} 마감</span>{/if}
+      <span class="deadline">
+        {#if item.due && showDate}<span class="deadline-date">{dueDate(item.due)}</span>{' '}{/if}
+        <span class="deadline-time">
+          {#if item.due}<span>{dueTime(item.due)} 마감</span>{/if}
+        </span>
+      </span>
+    </span>
+    <span class="agenda-side">
+      <span class="chip {status.tone}">{status.label}</span>
+      {#if d && !finished}<span class="dday {d.tone}">{d.label}</span>{/if}
     </span>
   </button>
-  <div class="agenda-side">
-    <span class="chip {status.tone}">{status.label}</span>
-    {#if d && !finished}<span class="dday {d.tone}">{d.label}</span>{/if}
-  </div>
 </div>
 
 <style>
@@ -87,16 +89,22 @@
     flex: 1;
     min-width: 0;
     display: grid;
-    gap: 5px;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 5px 6px;
     text-align: left;
     min-height: 44px;
     align-content: center;
   }
 
+  .copy {
+    min-width: 0;
+    display: grid;
+    gap: 5px;
+  }
+
   .title {
-    display: flex;
-    align-items: center;
-    gap: 6px;
+    display: block;
     font-weight: 650;
     font-size: 14.5px;
     letter-spacing: -0.01em;
@@ -106,32 +114,37 @@
   }
 
   .kind {
+    display: inline-block;
+    vertical-align: -2px;
+    margin-right: 5px;
     color: var(--c);
-    display: inline-flex;
   }
 
-  .text { min-width: 0; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; line-clamp: 2; -webkit-box-orient: vertical; line-height: 1.45; }
+  .text { min-width: 0; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; line-clamp: 2; -webkit-box-orient: vertical; line-height: 1.45; overflow-wrap: anywhere; }
 
   .finished .title {
     color: var(--text-3);
     text-decoration: line-through;
   }
 
-  .meta {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 4px;
+  .course {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
     font-size: 12px;
     color: var(--text-3);
-    overflow: hidden;
-    white-space: normal;
-    text-overflow: ellipsis;
   }
 
-  .course {
-    overflow: hidden;
-    text-overflow: ellipsis;
+  .deadline {
+    font-size: 12px;
+    color: var(--text-3);
+    line-height: 1.5;
+    font-variant-numeric: tabular-nums;
   }
+
+  .deadline-date { white-space: nowrap; }
+  .deadline-time { white-space: nowrap; }
 
   .dday {
     font-size: 12px;

@@ -1,3 +1,11 @@
+export type AccountPreferences = {
+  mealPlace: 'dorm' | 'staff';
+  timetableDisplay: 'full' | 'fit';
+  alertLeads: number[];
+  updatedAt: number;
+};
+export type AccountPreferenceChanges = Partial<Omit<AccountPreferences, 'updatedAt'>>;
+
 export type Profile = { name: string; hasPicture?: boolean; studentId?: string; department?: string | null };
 
 export type ActiveLecture = { key: string; name: string; time: string; code?: string | null };
@@ -97,6 +105,12 @@ export type SubmissionView = {
   late: boolean;
   closed: boolean;
 };
+export type CalendarState = {
+  checks: Record<string, boolean>;
+  alertsOff: string[];
+  alertLeads: Record<string, number[]>;
+};
+
 export type CalendarData = { courses: Course[]; items: CalendarItem[]; fetchedAt: number };
 
 export type Meal = { name: string; start: string | null; end: string | null; price: string | null; items: string[] };
@@ -142,7 +156,7 @@ export type Todo = {
   notify: boolean;
   alertLeads: number[] | null;
 };
-export type TodoInput = Omit<Todo, 'id' | 'doneAt'>;
+export type TodoInput = Omit<Todo, 'id' | 'doneAt' | 'dueAt'> & { dueAt: number };
 
 export type DownloadRecord = {
   id: string;
