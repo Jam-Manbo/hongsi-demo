@@ -1,11 +1,11 @@
 import { seed, type DemoData } from './data';
 import { ApiError } from './errors';
-const DATA = 'hongsi-demo:data:v2';
+const DATA = 'hongsi-demo:data:v3';
 const AUTH = 'hongsi-demo:auth';
 const CACHE_REVISION = 'hongsi-demo:response-cache-revision';
 const HOUR = 3_600_000;
 const hour = () => Math.floor(Date.now() / HOUR);
-const revision = () => `4:${hour()}`;
+const revision = () => `5:${hour()}`;
 let memory: DemoData | null = null;
 let memoryAuth: { remembered: boolean } | null = null;
 function read(storage: Storage, key: string) { try { return JSON.parse(storage.getItem(key) ?? 'null'); } catch { return null; } }
@@ -32,7 +32,7 @@ export function data() {
   refreshResponseCache();
   if (memory?.hour === hour()) return memory;
   const saved = read(localStorage, DATA);
-  memory = saved?.version === 2 && saved.hour === hour() && Array.isArray(saved.calendar?.items) && Array.isArray(saved.todos) && Array.isArray(saved.attendance) ? saved : seed();
+  memory = saved?.version === 3 && saved.hour === hour() && Array.isArray(saved.calendar?.items) && Array.isArray(saved.todos) && Array.isArray(saved.attendance) && Array.isArray(saved.receipts) && saved.preferences && saved.jobs ? saved : seed();
   for (const item of memory!.calendar.items) item.alertLeads ??= null;
   for (const todo of memory!.todos) todo.alertLeads ??= null;
   return memory!;
@@ -73,7 +73,7 @@ export function startHourlyReset() {
   window.addEventListener('pageshow', refresh);
   document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') refresh(); });
   window.addEventListener('storage', event => {
-    if (event.key === CACHE_REVISION && event.newValue && event.newValue !== `4:${openedHour}`) refresh();
+    if (event.key === CACHE_REVISION && event.newValue && event.newValue !== `5:${openedHour}`) refresh();
   });
   refresh();
 }

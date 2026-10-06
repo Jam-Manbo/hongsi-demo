@@ -65,7 +65,7 @@ export function longDay(key: string): string {
   return `${m}월 ${d}일 ${WEEKDAYS[wd]}요일`;
 }
 
-export function daysBetween(fromKey: string, toKey: string): number {
+function daysBetween(fromKey: string, toKey: string): number {
   const toUtc = (k: string) => {
     const [y, m, d] = k.split('-').map(Number);
     return Date.UTC(y, m - 1, d);
@@ -95,9 +95,9 @@ export function dueDateTime(sec: number): string {
   return `${dueDate(sec)} ${dueTime(sec)}`;
 }
 
-export function dday(sec: number): { label: string; tone: 'past' | 'today' | 'soon' | 'later' } {
-  const diff = daysBetween(todayKey(), dueKey(sec));
-  if (sec * 1000 < Date.now()) return { label: diff === 0 ? '오늘 마감됨' : `${-diff}일 지남`, tone: 'past' };
+export function dday(sec: number, now: number): { label: string; tone: 'past' | 'today' | 'soon' | 'later' } {
+  const diff = daysBetween(dayKey(now), dueKey(sec));
+  if (sec * 1000 < now) return { label: diff === 0 ? '오늘 마감됨' : `${-diff}일 지남`, tone: 'past' };
   if (diff === 0) return { label: 'D-DAY', tone: 'today' };
   return { label: `D-${diff}`, tone: diff <= 3 ? 'soon' : 'later' };
 }
@@ -133,5 +133,5 @@ export function hourNow(): number {
 }
 
 export function sentenceLines(text: string): string {
-  return text.replace(/([.!?]) +(?=\S)/g, '$1\n');
+  return text.replace(/([.!?]) +(?=[^\s·])/g, '$1\n');
 }

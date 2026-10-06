@@ -36,18 +36,16 @@
     setPref('attendance-view', v);
   }
 
-  function openWeek() {
-    if (phone.current) weekOpen = true;
-    else if (!desktop.current) setView('week');
-  }
-
   onMount(() => {
     attendance.load();
     calendar.load();
     timetable.load();
+  });
+
+  $effect(() => {
     if (focus.timetable) {
       focus.timetable = false;
-      openWeek();
+      weekOpen = true;
     }
   });
 
@@ -55,7 +53,9 @@
 
 
   const colorByCode = $derived.by(() => {
-    const courses = calendar.data?.courses ?? [];
+    const term = calendar.data?.currentTerm;
+    const courses = (calendar.data?.courses ?? []).filter((course) => !term
+      || (course.term?.year === term.year && course.term?.semester === term.semester));
     const colors = courseColors(courses);
     return new Map(courses.map((c) => [c.code ?? '', colors.get(c.id) ?? 'var(--border-strong)']));
   });
@@ -167,7 +167,7 @@
       {/each}
     </ul>
   {:else}
-    <EmptyState message="오늘은 수업이 없어요" />
+    <EmptyState message="오늘은 수업이 없어요." />
   {/if}
   </section>
   {/if}
@@ -253,7 +253,7 @@
               {/each}
             </div>
           {:else}
-            <p class="notice">{c.notice ?? '교수님이 출석부를 공개하지 않았어요'}</p>
+            <p class="notice">{c.notice ?? '교수님이 출석부를 공개하지 않았어요.'}</p>
           {/if}
         </article>
       {/each}

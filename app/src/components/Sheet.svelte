@@ -1,9 +1,10 @@
 <script module lang="ts">
-  const openPanels = new Set<HTMLElement>();
+  export { closeSheets } from '../lib/modal-stack';
 </script>
 
 <script lang="ts">
-  import type { Snippet } from 'svelte';
+  import { untrack, type Snippet } from 'svelte';
+  import { isTopSheet, registerSheet } from '../lib/modal-stack';
   import { MediaQuery } from 'svelte/reactivity';
   import { fade, fly } from 'svelte/transition';
   import Icon from './Icon.svelte';
@@ -15,7 +16,10 @@
     titleMeta = '',
     titleIcon = '',
     wide = false,
-    layer = 0,
+    confirm = false,
+    showClose = true,
+    closeDisabled = false,
+    onbeforeclose,
     onclose,
     children,
     footer,
@@ -25,23 +29,29 @@
     titleMeta?: string;
     titleIcon?: string;
     wide?: boolean;
-    layer?: number;
+    confirm?: boolean;
+    showClose?: boolean;
+    closeDisabled?: boolean;
+    onbeforeclose?: () => boolean;
     onclose?: () => void;
-    children: Snippet;
+    children?: Snippet;
     footer?: Snippet;
   } = $props();
 
   const phone = new MediaQuery('max-width: 639px');
   const reducedMotion = new MediaQuery('(prefers-reduced-motion: reduce)');
-  const motion = $derived(reducedMotion.current ? { y: 0, duration: 0 } : phone.current ? { y: '100%', opacity: 1, duration: 260 } : { y: 24, opacity: 0, duration: 200 });
+  const motion = $derived(reducedMotion.current ? { y: 0, duration: 0 } : phone.current && !confirm ? { y: '100%', opacity: 1, duration: 260 } : { y: 24, opacity: 0, duration: 200 });
 
   let panel: HTMLDivElement | undefined = $state();
+  let backdrop: HTMLDivElement | undefined = $state();
+  let body: HTMLDivElement | undefined = $state();
+  let bodyContent: HTMLDivElement | undefined = $state();
   let dragY = $state(0);
   let dragging = $state(false);
 
   function resetDrag() { dragging = false; dragY = 0; }
   function canDrag(target: HTMLElement) {
-    if (!phone.current || panel !== [...openPanels].at(-1)) return false;
+    if (!phone.current || confirm || !isTopSheet(panel)) return false;
     if (target.closest('input, textarea, select, [contenteditable]:not([contenteditable="false"]), [role="slider"], [role="listbox"]')) return false;
     for (let node: HTMLElement | null = target; node && node !== panel; node = node.parentElement) {
       if (node.scrollTop > 0) return false;
@@ -61,44 +71,64 @@
   }
 
   function close() {
+    if (onbeforeclose?.() === false) {
+      resetDrag();
+      return false;
+    }
     open = false;
     onclose?.();
-  }
-
-  function onkeydown(e: KeyboardEvent) {
-    if (open && e.key === 'Escape' && !e.defaultPrevented && panel === [...openPanels].at(-1)) {
-      e.preventDefault();
-      close();
-    }
+    return true;
   }
 
   $effect(() => {
-    if (open && panel) {
-      const currentPanel = panel;
-      openPanels.add(currentPanel);
+    if (!open || !panel || !backdrop) return;
+    const currentPanel = panel, currentBackdrop = backdrop;
+    return untrack(() => {
       resetDrag();
-      const prev = document.activeElement as HTMLElement | null;
-      queueMicrotask(() => currentPanel.focus());
-      document.body.style.overflow = 'hidden';
-      return () => {
-        openPanels.delete(currentPanel);
-        document.body.style.overflow = openPanels.size ? 'hidden' : '';
-        if (prev?.isConnected) prev.focus();
-      };
-    }
+      return registerSheet(currentPanel, currentBackdrop, close);
+    });
+  });
+
+  $effect(() => {
+    if (!open || !body || !bodyContent || !footer || wide || confirm) return;
+    const container = body, content = bodyContent;
+    let frame = 0;
+    const measure = () => {
+      frame = 0;
+      container.style.removeProperty('--body-bottom-space');
+      const style = getComputedStyle(container);
+      const preferred = parseFloat(style.getPropertyValue('--body-bottom'));
+      const remaining = container.getBoundingClientRect().height - parseFloat(style.paddingTop)
+        - parseFloat(style.borderTopWidth) - parseFloat(style.borderBottomWidth) - content.getBoundingClientRect().height;
+      const space = remaining >= -1 ? Math.max(0, Math.min(preferred, remaining)) : preferred;
+      container.style.setProperty('--body-bottom-space', `${space}px`);
+    };
+    const schedule = () => { if (!frame) frame = requestAnimationFrame(measure); };
+    const observer = new ResizeObserver(schedule);
+    observer.observe(container);
+    observer.observe(content);
+    window.addEventListener('resize', schedule);
+    window.visualViewport?.addEventListener('resize', schedule);
+    measure();
+    return () => {
+      observer.disconnect();
+      cancelAnimationFrame(frame);
+      window.removeEventListener('resize', schedule);
+      window.visualViewport?.removeEventListener('resize', schedule);
+      container.style.removeProperty('--body-bottom-space');
+    };
   });
 </script>
 
-<svelte:window {onkeydown} />
-
 {#if open}
-  <div class="backdrop" style:z-index={60 + layer * 2} use:portal transition:fade={{ duration: 160 }} onclick={close} aria-hidden="true"></div>
+  <div class="backdrop" bind:this={backdrop} use:portal transition:fade={{ duration: reducedMotion.current ? 0 : 160 }} onclick={() => { if (isTopSheet(panel)) close(); }} aria-hidden="true"></div>
   <div
     class="sheet"
-    style:z-index={61 + layer * 2}
     class:wide
+    class:confirm
+    class:message={!children}
     class:dragging
-    style:translate={phone.current ? `0 ${dragY}px` : undefined}
+    style:translate={phone.current && !confirm ? `0 ${dragY}px` : undefined}
     use:portal
     use:verticalDrag={{ canStart: canDrag, move: (distance) => { dragging = true; dragY = distance; }, end: releaseDrag, cancel: resetDrag }}
     role="dialog"
@@ -114,9 +144,9 @@
         {#if titleIcon}<span class="title-icon"><Icon name={titleIcon} size={21} /></span>{/if}
         {#if titleMeta}<span>{title}</span><span class="title-meta">{titleMeta}</span>{:else}{title}{/if}
       </h2>
-      <button class="icon-btn" onclick={close} aria-label="닫기"><Icon name="close" /></button>
+      {#if showClose}<button class="icon-btn" disabled={closeDisabled} onclick={close} aria-label="닫기"><Icon name="close" /></button>{/if}
     </header>
-    <div class="body">{@render children()}</div>
+    {#if children}<div class="body" bind:this={body}><div class="body-content" bind:this={bodyContent}>{@render children()}</div></div>{/if}
     {#if footer}<footer>{@render footer()}</footer>{/if}
   </div>
 {/if}
@@ -125,11 +155,15 @@
   .backdrop {
     position: fixed;
     inset: 0;
-    background: rgb(12 18 27 / 42%);
+    background: var(--modal-backdrop);
+    touch-action: none;
     z-index: 60;
   }
 
+  .backdrop:global([data-covered]) { visibility: hidden; }
+
   .sheet {
+    --sheet-surface: var(--modal-surface);
     position: fixed;
     z-index: 61;
     left: 0;
@@ -138,18 +172,22 @@
     max-height: 90dvh;
     display: flex;
     flex-direction: column;
-    background: var(--surface);
+    background: var(--sheet-surface);
     border-radius: var(--radius-lg) var(--radius-lg) 0 0;
-    box-shadow: var(--shadow-lg);
+    border: 1px solid var(--modal-border);
+    box-shadow: var(--modal-shadow);
     overflow: hidden;
     padding-bottom: var(--safe-b);
     outline: none;
     transition: translate 180ms var(--ease);
   }
 
+  .sheet:global([data-covered]) { pointer-events: none; }
+
   .sheet.dragging { transition: none; user-select: none; }
 
   .grip {
+    flex: none;
     width: 40px;
     height: 4px;
     border-radius: 4px;
@@ -165,6 +203,8 @@
     padding: 8px 12px 10px 20px;
     flex: none;
   }
+
+  .sheet.message header { padding: 24px 20px; }
 
   h2 {
     font-size: 18px;
@@ -201,17 +241,24 @@
   }
 
   .body {
+    --body-bottom: 24px;
     min-height: 0;
     overflow-y: auto;
-    overscroll-behavior-y: contain;
-    padding: 4px 20px 24px;
+    overscroll-behavior-y: none;
+    padding: 4px 20px var(--body-bottom-space, var(--body-bottom));
+    transition: none;
   }
+
+  .body:has(+ footer) { --body-bottom: 16px; }
+
+  .body-content { display: flow-root; }
+  .body-content > :global(:last-child) { margin-bottom: 0; }
 
   footer {
     display: flex;
     gap: 8px;
     padding: 14px 20px 16px;
-    background: var(--surface);
+    background: inherit;
     flex: none;
     border-top: 1px solid var(--border);
   }
@@ -254,4 +301,19 @@
       padding: 4px 16px 18px;
     }
   }
+  .sheet.confirm {
+    inset: 50% auto auto 50%;
+    transform: translate(-50%, -50%);
+    width: min(400px, calc(100vw - 48px));
+    max-height: min(84dvh, calc(100dvh - env(safe-area-inset-top, 0px) - var(--safe-b) - 48px));
+    border-radius: 22px;
+    padding-bottom: 0;
+  }
+
+  .confirm .grip { display: none; }
+  .confirm header { padding: 22px 20px 14px; align-items: flex-start; }
+  .confirm h2 { font-size: 18px; line-height: 1.45; }
+  .confirm .body { padding: 0 20px 22px; }
+  .confirm footer { padding: 16px 20px 20px; }
+
 </style>

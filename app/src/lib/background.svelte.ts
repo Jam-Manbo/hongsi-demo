@@ -1,12 +1,12 @@
 import { ApiError, isApp, request } from './api';
-import { mobileNotifications, notificationsAllowed, requestNotificationPermission, setRemoteNotifications } from './notify';
+import { contextMessage } from './api-error';
+import { mobileNotifications, notificationsAllowed, requestNotificationPermission, setNotificationsEnabled, setRemoteNotifications } from './notify';
 import { isCurrentSession, onSessionChange, readUserData, sessionUser, sessionVersion, writeUserData } from './session';
-import { settings } from './settings.svelte';
 import { seatPrefs } from './seat.svelte';
 import { app, onBeforeLogout, pref, setPref } from './store.svelte';
 
 type Status = { registered: boolean; classroomAlerts: boolean; consented: boolean; available: { web: boolean; fcm: boolean; apns: boolean }; publicKey: string | null; expiresAt: number | null; lastPollAt: number | null; scheduled: number; nextAt: number | null; error: string | null; schoolError: string | null; pollMinutes: number };
-type Removal = 'all' | 'device' | null;
+type Removal = 'device' | null;
 export const background = $state({ status: null as Status | null, busy: false, classroomAlerts: false, error: '', choice: null as boolean | null });
 const userKey = (name: string) => `${name}:${encodeURIComponent(sessionUser() ?? '')}`;
 let initialized = false;
@@ -24,37 +24,45 @@ let retryTimer: ReturnType<typeof setTimeout> | undefined;
 
 function rememberChoice(enabled: boolean) {
   background.choice = enabled;
-  setPref(userKey('sync-enabled-v2'), enabled);
+  setPref(userKey('sync-enabled'), enabled);
 }
 function rememberAlerts(enabled: boolean) {
   background.classroomAlerts = enabled;
-  setPref(userKey('classroom-alerts-v2'), enabled);
+  setPref(userKey('classroom-alerts'), enabled);
   if (enabled || !classroomEpoch) {
     classroomEpoch = crypto.randomUUID();
-    setPref(userKey('classroom-cycle-v2'), classroomEpoch);
+    setPref(userKey('classroom-cycle'), classroomEpoch);
   }
 }
 function rememberRemoval(value: Removal) {
   removal = value;
-  setPref(userKey('sync-removal-v2'), value);
+  setPref(userKey('sync-removal'), value);
 }
 function deviceId() {
   if (!device) {
-    device = readUserData('sync-device-v2', '') || crypto.randomUUID();
-    writeUserData('sync-device-v2', device);
+    device = readUserData('sync-device', '') || crypto.randomUUID();
+    writeUserData('sync-device', device);
   }
   return device;
 }
 function prefs() {
   if (!classroomEpoch) {
     classroomEpoch = crypto.randomUUID();
-    setPref(userKey('classroom-cycle-v2'), classroomEpoch);
+    setPref(userKey('classroom-cycle'), classroomEpoch);
   }
-  return { deviceId: deviceId(), leads: [...settings.alertLeads], seatLeads: [...seatPrefs.alerts], classroomAlerts: background.classroomAlerts, classroomEpoch };
+  return { deviceId: deviceId(), seatLeads: [...seatPrefs.alerts], classroomAlerts: background.classroomAlerts, classroomEpoch };
 }
 const pushPlatform = () => !isApp ? 'web' : /Android/i.test(navigator.userAgent) ? 'fcm' : mobileNotifications ? 'apns' : null;
 const pushSupported = () => isApp ? mobileNotifications : 'serviceWorker' in navigator && 'PushManager' in window && window.isSecureContext;
-const problem = (e: unknown) => e instanceof Error ? e.message : '동기화 서버에 연결하지 못했어요.';
+class SyncError extends Error {}
+type SyncStep = 'status' | 'connect' | 'settings' | 'disconnect';
+const failures: Record<SyncStep, string> = {
+  status: '알림 연결 상태를 확인하지 못했어요.',
+  connect: '백그라운드 동기화에 연결하지 못했어요.',
+  settings: '알림 설정을 적용하지 못했어요.',
+  disconnect: '백그라운드 동기화를 끄지 못했어요. 자동으로 다시 시도할게요.',
+};
+const problem = (e: unknown, step: SyncStep) => e instanceof SyncError ? e.message : contextMessage(e, failures[step]);
 function clearRetry() { clearTimeout(retryTimer); retryTimer = undefined; }
 function scheduleRetry() {
   clearRetry();
@@ -67,7 +75,7 @@ async function destination(publicKey: string | null) {
     const n = await import('@choochmeque/tauri-plugin-notifications-api');
     return { token: await n.registerForPushNotifications() };
   }
-  if (!publicKey) throw new Error('알림 서버의 설정을 확인하지 못했어요. 다시 시도해 주세요.');
+  if (!publicKey) throw new SyncError('알림 서버의 설정을 확인하지 못했어요. 다시 시도해 주세요.');
   const registration = await navigator.serviceWorker.register('/notification-sw.js', { scope: '/' });
   await navigator.serviceWorker.ready;
   const decoded = atob(publicKey.replace(/-/g, '+').replace(/_/g, '/'));
@@ -85,23 +93,20 @@ async function readStatus(): Promise<Status> {
   }
   return status;
 }
-async function reconcile(renewToken: boolean, check: () => void) {
+async function reconcile(renewToken: boolean, check: () => void, step: (value: SyncStep) => void) {
   if (removal) {
-    const target = removal;
-    await request('DELETE', `/api/background/session?device=${target === 'all' ? 'all' : encodeURIComponent(deviceId())}`);
+    step('disconnect');
+    await request('DELETE', `/api/push/device?device=${encodeURIComponent(deviceId())}`);
     check();
     rememberRemoval(null);
     prefSignature = ''; renewedAt = 0;
     background.status = null;
   }
-  if (!background.choice) {
-    await setRemoteNotifications(false);
-    check();
-    return;
-  }
+  step('status');
   let status = await readStatus();
   check();
   background.status = status;
+  step('connect');
   let consented = status.consented;
   if (consented && (renewToken || Date.now() - renewedAt > 60 * 60_000)) {
     try {
@@ -115,16 +120,28 @@ async function reconcile(renewToken: boolean, check: () => void) {
       else throw e;
     }
   }
+  if (!background.choice) {
+    if (status.registered) {
+      step('disconnect');
+      await request('DELETE', `/api/push/device?device=${encodeURIComponent(deviceId())}`);
+      check();
+    }
+    background.status = { ...status, consented, registered: false, classroomAlerts: false, scheduled: 0, nextAt: null, error: null };
+    await setRemoteNotifications(false);
+    check();
+    return;
+  }
   if (!consented) {
     await request('POST', '/api/background/session', { deviceId: deviceId(), consent: true });
     check();
     status = await readStatus();
     check();
-    if (!status.consented) throw new Error('동기화를 시작하지 못했어요. 자동으로 다시 시도해요.');
+    if (!status.consented) throw new SyncError('백그라운드 동기화에 연결하지 못했어요.');
     renewedAt = Date.now();
     prefSignature = '';
   }
   background.status = status;
+  step('settings');
   const allowed = await notificationsAllowed();
   check();
   const kind = pushPlatform();
@@ -142,7 +159,7 @@ async function reconcile(renewToken: boolean, check: () => void) {
   if (!status.available[kind]) {
     await setRemoteNotifications(false);
     check();
-    throw new Error('동기화는 유지되고 있어요. 알림 서버 연결은 다시 시도해요.');
+    throw new SyncError('서버의 알림 발송 설정을 확인하지 못했어요.');
   }
   const values = prefs(), signature = JSON.stringify(values);
   if (!status.registered || renewToken) {
@@ -152,7 +169,7 @@ async function reconcile(renewToken: boolean, check: () => void) {
     check();
     status = await readStatus();
     check();
-    if (!status.registered) throw new Error('알림 등록을 완료하지 못했어요. 자동으로 다시 시도해요.');
+    if (!status.registered) throw new SyncError('알림 수신 설정을 완료하지 못했어요. 자동으로 다시 시도할게요.');
   } else if (signature !== prefSignature || status.classroomAlerts !== values.classroomAlerts) {
     await request('PUT', '/api/push/preferences', values);
     check();
@@ -178,15 +195,16 @@ function synchronize(renewToken = false): Promise<boolean> {
       tokenRequested = false;
       const current = () => isCurrentSession(version) && revision === attempt && !app.loggingOut;
       const check = () => { if (!current()) throw new Error('설정이 변경됐어요.'); };
+      let step: SyncStep = 'connect';
       try {
-        await reconcile(renew, check);
+        await reconcile(renew, check, (value) => { step = value; });
         check();
         background.error = '';
         retries = 0;
         ok = true;
       } catch (e) {
         ok = false;
-        if (current()) background.error = background.choice ? problem(e) : `해제를 완료하지 못했어요. 다시 시도해요. ${problem(e)}`;
+        if (current()) background.error = problem(e, background.choice ? step : 'disconnect');
       }
     }
     return ok;
@@ -213,9 +231,11 @@ export async function setBackgroundEnabled(enabled: boolean) {
   if (app.loggingOut) return false;
   revision++; retries = 0;
   rememberChoice(enabled);
+  void setNotificationsEnabled(enabled);
   background.error = '';
   if (!enabled) {
-    rememberRemoval('all');
+    rememberAlerts(false);
+    rememberRemoval('device');
     clearRetry();
     void setRemoteNotifications(false);
   }
@@ -228,6 +248,7 @@ export async function enableBackgroundByDefault(remembered: boolean) {
     if (remembered) rememberChoice(true);
     else background.choice = false;
   }
+  void setNotificationsEnabled(background.choice === true);
   return synchronize(true);
 }
 export const syncBackgroundPreferences = () => synchronize();
@@ -253,10 +274,14 @@ onSessionChange(() => {
   initialized = false; device = ''; prefSignature = ''; revision++; renewedAt = 0; retries = 0;
   syncTask = null; syncRequested = false; tokenRequested = false;
   background.status = null; background.busy = false; background.error = '';
-  background.choice = sessionUser() ? pref<boolean | null>(userKey('sync-enabled-v2'), null) : null;
-  background.classroomAlerts = sessionUser() ? pref<boolean>(userKey('classroom-alerts-v2'), false) : false;
-  classroomEpoch = sessionUser() ? pref<string>(userKey('classroom-cycle-v2'), '') : '';
-  removal = sessionUser() ? pref<Removal>(userKey('sync-removal-v2'), null) : null;
+  background.choice = sessionUser() ? pref<boolean | null>(userKey('sync-enabled'), null) : null;
+  background.classroomAlerts = sessionUser() ? pref<boolean>(userKey('classroom-alerts'), false) : false;
+  classroomEpoch = sessionUser() ? pref<string>(userKey('classroom-cycle'), '') : '';
+  removal = sessionUser() ? pref<Removal>(userKey('sync-removal'), null) : null;
+  if (sessionUser()) {
+    if (background.choice === false) rememberAlerts(false);
+  }
+  void setNotificationsEnabled(background.choice !== false);
 });
 if (typeof window !== 'undefined') {
   const resume = () => { if (initialized && document.visibilityState === 'visible') void refreshBackground(); };

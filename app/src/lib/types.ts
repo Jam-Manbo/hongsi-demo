@@ -1,6 +1,15 @@
-export type Profile = { name: string; hasPicture?: boolean; studentId?: string; department?: string | null };
+export type AccountPreferences = {
+  mealPlace: 'dorm' | 'staff';
+  timetableDisplay: 'full' | 'fit';
+  semesterDisplay: SemesterDisplay;
+  alertLeads: number[];
+  updatedAt: number;
+};
+export type AccountPreferenceChanges = Partial<Omit<AccountPreferences, 'updatedAt'>>;
 
-export type ActiveLecture = { key: string; name: string; time: string; code?: string | null };
+export type Profile = { name: string; hasPicture: boolean; studentId: string; department: string | null };
+
+export type ActiveLecture = { key: string; name: string; time: string; code: string | null };
 export type ActiveLectures = { items: ActiveLecture[]; message: string | null };
 
 export type ClassSlot = {
@@ -35,11 +44,12 @@ export type AttendanceCourse = {
   summary: AttendanceSummary;
 };
 
-export type Course = { id: number; name: string; code: string | null };
+export type SemesterDisplay = 'current' | 'all';
+export type AcademicTerm = { year: number; semester: number };
+export type Course = { id: number; name: string; code: string | null; term: AcademicTerm | null };
 export type Attachment = { name: string; size: number | null; mime: string | null };
 export type ItemStatus =
   | 'submitted'
-  | 'draft'
   | 'not_submitted'
   | 'overdue'
   | 'unknown'
@@ -85,7 +95,7 @@ export type SubmitConfig = {
 
 export type SubmissionView = {
   info: {
-    status: 'submitted' | 'draft' | 'not_submitted' | 'unknown';
+    status: 'submitted' | 'not_submitted' | 'unknown';
     canEdit: boolean;
     locked: boolean;
     files: Attachment[];
@@ -97,7 +107,34 @@ export type SubmissionView = {
   late: boolean;
   closed: boolean;
 };
-export type CalendarData = { courses: Course[]; items: CalendarItem[]; fetchedAt: number };
+
+export type SubmissionStage = 'prepare' | 'transfer' | 'upload' | 'submit' | 'verify';
+export type SubmissionProgress = {
+  stage: SubmissionStage;
+  fileName: string | null;
+  fileCount: number;
+  uploadedFiles: number;
+  sentBytes: number;
+  totalBytes: number;
+};
+export type SubmissionJob = {
+  id: string;
+  revision: number;
+  status: 'running' | 'complete' | 'failed' | 'uncertain';
+  progress: SubmissionProgress;
+  result: SubmissionView | null;
+  error: { status: number; code: string; message: string } | null;
+};
+export type CalendarState = {
+  checks: Record<string, boolean>;
+  alertsOff: string[];
+  alertLeads: Record<string, number[]>;
+};
+
+export type CalendarData = {
+  courses: Course[]; items: CalendarItem[]; fetchedAt: number;
+  semesterDisplay: SemesterDisplay; currentTerm: AcademicTerm | null;
+};
 
 export type Meal = { name: string; start: string | null; end: string | null; price: string | null; items: string[] };
 export type MealPlace = { name: string; meals: Meal[] };
@@ -136,21 +173,19 @@ export type Todo = {
   parentKey: string | null;
   title: string;
   note: string;
-  dueAt: number | null;
+  due: number | null;
   allDay: boolean;
   doneAt: number | null;
   notify: boolean;
   alertLeads: number[] | null;
 };
-export type TodoInput = Omit<Todo, 'id' | 'doneAt'>;
+export type TodoInput = Omit<Todo, 'id' | 'doneAt' | 'due'> & { due: number };
 
 export type DownloadRecord = {
   id: string;
   name: string;
   course: string;
-  source?: FileSource;
-  cmid: number;
-  index: number;
+  source: FileSource;
   at: number;
   path: string | null;
 };

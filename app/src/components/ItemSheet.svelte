@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { clock } from '../lib/clock.svelte';
   import { setItemAlert, setItemAlertLeads } from '../lib/actions.svelte';
   import { itemStatus, isFinished } from '../lib/colors';
   import { dateTime, dday, dueDateTime } from '../lib/format';
@@ -55,17 +56,17 @@
       <h3>{item.title}</h3>
       <div class="chips">
         <span class="chip {status.tone}">{status.label}</span>
-        {#if item.due && !isFinished(item)}<span class="chip primary">{dday(item.due).label}</span>{/if}
+        {#if item.due && !isFinished(item)}<span class="chip primary">{dday(item.due, clock.now).label}</span>{/if}
       </div>
     </div>
 
     <dl class="facts">
       {#if item.kind === 'vod'}
-        {#if item.start}<div><dt>인정 시작</dt><dd>{dateTime(item.start)}</dd></div>{/if}
+        {#if item.start}<div><dt>출석 인정 시작</dt><dd>{dateTime(item.start)}</dd></div>{/if}
         {#if item.due}<div><dt>출석 인정 마감</dt><dd class="strong">{dueDateTime(item.due)}</dd></div>{/if}
         {#if item.lateUntil}<div><dt>기간 외 시청</dt><dd>{dueDateTime(item.lateUntil)}까지</dd></div>{/if}
         {#if item.watch}
-          <div><dt>요구 시간</dt><dd>{item.watch.required ?? '-'}</dd></div>
+          <div><dt>필수 시청 시간</dt><dd>{item.watch.required ?? '-'}</dd></div>
           <div><dt>내 시청 시간</dt><dd>{item.watch.watched ?? '기록 없음'}</dd></div>
           {#if item.watch.mark}<div><dt>출석부 표시</dt><dd>{item.watch.mark}</dd></div>{/if}
         {/if}
@@ -79,13 +80,13 @@
             </dd>
           </div>
         {/if}
-        {#if item.lateUntil && item.lateUntil !== item.due}<div><dt>늦은 제출 마감</dt><dd>{dueDateTime(item.lateUntil)}</dd></div>{/if}
+        {#if item.lateUntil && item.lateUntil !== item.due}<div><dt>지각 제출 마감</dt><dd>{dueDateTime(item.lateUntil)}</dd></div>{/if}
       {/if}
     </dl>
     {#if alertable}
       {#key item.key}
         <div class="alert-settings">
-          <DeadlineAlerts enabled={item.alert !== false} leads={item.alertLeads ?? null}
+          <DeadlineAlerts enabled={item.alert} leads={item.alertLeads}
             label="이 {item.kind === 'vod' ? '강의' : '과제'} 마감 알림"
             ontoggle={(on) => item ? setItemAlert(item, on) : undefined}
             onchange={(leads) => item ? setItemAlertLeads(item, leads) : undefined} />
@@ -102,12 +103,14 @@
         <div class="sub-head">
           <strong>이 {item.kind === 'vod' ? '강의' : '과제'}의 할 일</strong>
           {#if subtodos.length}<span class="muted">{subtodos.filter((t) => t.doneAt !== null).length}/{subtodos.length}</span>{/if}
-          <button class="sub-add" onclick={() => item && onaddtodo?.(item)}><Icon name="plus" size={15} stroke={2.4} />추가</button>
+          {#if !item.done}
+            <button class="sub-add" onclick={() => item && onaddtodo?.(item)}><Icon name="plus" size={15} stroke={2.4} />추가</button>
+          {/if}
         </div>
         {#each subtodos as t (t.id)}
           <TodoRow todo={t} {color} {course} onopen={(x) => oneditodo?.(x)} />
         {:else}
-          <EmptyState message="추가한 할 일이 없어요" compact />
+          <EmptyState message="추가한 할 일이 없어요." compact />
         {/each}
       </div>
     {/if}
@@ -136,7 +139,7 @@
       </button>
       {#if canSubmit}
         <button class="btn btn-primary w1" onclick={() => (submitOpen = true)}>
-          <Icon name="check" size={18} />{submitted ? '과제 수정하기' : '제출하기'}
+          <Icon name="check" size={18} />{submitted ? '제출 파일 수정' : '제출하기'}
         </button>
       {:else}
         <a class="btn btn-primary w1" href={item.url} target="_blank" rel="noopener noreferrer">
@@ -147,7 +150,7 @@
   {/snippet}
 </Sheet>
 
-<SubmitSheet bind:open={submitOpen} {item} />
+<SubmitSheet bind:open={submitOpen} {item} {course} />
 
 <style>
   .head {
@@ -285,6 +288,8 @@
   .intro :global(p) {
     margin: 0 0 8px;
   }
+
+  .intro > :global(:last-child) { margin-bottom: 0; }
 
   .files {
     margin-top: 14px;

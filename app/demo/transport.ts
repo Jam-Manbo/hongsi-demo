@@ -1,6 +1,7 @@
 import { demoRequest, demoFile } from './api';
 import { ApiError } from './errors';
 import { auth } from './storage';
+import { publicResponse } from './releases';
 import type { FileSource } from '../src/lib/types';
 
 export function fileSource(path: string): FileSource | null {
@@ -24,9 +25,7 @@ export const mockFetch: typeof fetch = async (input, init) => {
   signal?.throwIfAborted();
   try {
     if (url.origin !== location.origin || !url.pathname.startsWith('/api/')) throw new ApiError(403, 'demo_network_blocked', '데모에서는 외부 서버에 연결하지 않아요.');
-    if (url.pathname === '/api/health' && method === 'GET') return Response.json({ ok: true });
-    if (url.pathname === '/api/app-update' && method === 'GET') return Response.json({ version: '1.0.0', versionCode: 10000, url: 'https://hongsi-demo.invalid/demo.apk', size: 25 * 1024 * 1024,
-      notes: '홍시 데모용 업데이트 안내입니다.\n출결·과제·강의·열람실 기능을 체험해 보세요.\n실제 APK는 다운로드하지 않습니다.', sha256: '0'.repeat(64) });
+    if (method === 'GET') { const response = publicResponse(url.pathname); if (response) return response; }
     const source = fileSource(url.pathname);
     if (source && method === 'GET') {
       if (!auth()) throw new ApiError(401, 'login_required', '데모에 로그인해 주세요.');

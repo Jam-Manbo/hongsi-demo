@@ -1,6 +1,7 @@
 <script lang="ts">
-  import { dday, shortDate, time } from '../lib/format';
-  import { toggleTodo } from '../lib/todos.svelte';
+  import { clock } from '../lib/clock.svelte';
+  import { dday, dueDate, dueTime } from '../lib/format';
+  import { pendingTodos, toggleTodo } from '../lib/todos.svelte';
   import type { Todo } from '../lib/types';
   import Icon from './Icon.svelte';
 
@@ -13,24 +14,29 @@
   }: { todo: Todo; color: string; course: string; showDate?: boolean; onopen: (t: Todo) => void } = $props();
 
   const done = $derived(todo.doneAt !== null);
-  const d = $derived(todo.dueAt && !done ? dday(todo.dueAt + (todo.allDay ? 86_399 : 0)) : null);
+  const busy = $derived(pendingTodos.has(todo.id));
+  const d = $derived(todo.due !== null && !done ? dday(todo.due, clock.now) : null);
 </script>
 
 <div class="row" class:done style:--c={color}>
-  <button class="check" class:on={done} onclick={() => toggleTodo(todo)} aria-label={done ? '할 일 완료 취소' : '할 일 완료'} aria-pressed={done}>
+  <button class="check" class:on={done} disabled={busy} aria-busy={busy} onclick={() => toggleTodo(todo)} aria-label={done ? '할 일 완료 취소' : '할 일 완료'} aria-pressed={done}>
     {#if done}<Icon name="tick" size={15} stroke={2.6} />{/if}
   </button>
-  <button class="main" onclick={() => onopen(todo)}>
-    <span class="title"><span class="tag">할 일</span><span class="text">{todo.title}</span></span>
-    <span class="meta">
-      <span>{course}</span>
-      {#if todo.dueAt}<span>· {showDate ? shortDate(todo.dueAt) : ''} {todo.allDay ? '하루 종일' : time(todo.dueAt)}</span>{/if}
-      {#if todo.note}<span>· 메모</span>{/if}
+  <button class="main" disabled={busy} onclick={() => onopen(todo)}>
+    <span class="copy">
+      <span class="title"><span class="text"><span class="kind" role="img" aria-label="할 일"><Icon name="checklist" size={15} /></span>{todo.title}</span></span>
+      <span class="course">{course}</span>
+      <span class="deadline">
+        {#if todo.due !== null && showDate}<span class="deadline-date">{dueDate(todo.due)}</span>{' '}{/if}
+        <span class="deadline-time">
+          {#if todo.due !== null}<span>{todo.allDay ? '하루 종일' : `${dueTime(todo.due)} 마감`}</span>{/if}
+        </span>
+      </span>
+    </span>
+    <span class="agenda-side">
+      {#if d}<span class="dday {d.tone}">{d.label}</span>{/if}
     </span>
   </button>
-  <div class="agenda-side">
-    {#if d}<span class="dday {d.tone}">{d.label}</span>{/if}
-  </div>
 </div>
 
 <style>
@@ -67,16 +73,22 @@
     flex: 1;
     min-width: 0;
     display: grid;
-    gap: 5px;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 5px 6px;
     text-align: left;
     min-height: 44px;
     align-content: center;
   }
 
+  .copy {
+    min-width: 0;
+    display: grid;
+    gap: 5px;
+  }
+
   .title {
-    display: flex;
-    align-items: center;
-    gap: 6px;
+    display: block;
     font-weight: 650;
     font-size: 14.5px;
     overflow: hidden;
@@ -84,33 +96,38 @@
     text-overflow: ellipsis;
   }
 
-  .tag {
-    flex: none;
-    font-size: 11px;
-    font-weight: 750;
-    padding: 1px 6px;
-    border-radius: 6px;
-    color: var(--text-2);
-    background: var(--surface-3);
+  .kind {
+    display: inline-block;
+    vertical-align: -2px;
+    margin-right: 5px;
+    color: var(--c);
   }
 
-  .text { min-width: 0; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; line-clamp: 2; -webkit-box-orient: vertical; line-height: 1.45; }
+  .text { min-width: 0; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; line-clamp: 2; -webkit-box-orient: vertical; line-height: 1.45; overflow-wrap: anywhere; }
 
   .done .title {
     color: var(--text-3);
     text-decoration: line-through;
   }
 
-  .meta {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 4px;
+  .course {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
     font-size: 12px;
     color: var(--text-3);
-    overflow: hidden;
-    white-space: normal;
-    text-overflow: ellipsis;
   }
+
+  .deadline {
+    font-size: 12px;
+    color: var(--text-3);
+    line-height: 1.5;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .deadline-date { white-space: nowrap; }
+  .deadline-time { white-space: nowrap; }
 
   .dday {
     font-variant-numeric: tabular-nums;

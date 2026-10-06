@@ -2,6 +2,7 @@ import { mockFetch, fileSource } from './transport';
 import { demoFile } from './api';
 import { auth } from './storage';
 import { LIVE_SITE } from './links';
+import { installUploadMock } from './xhr';
 
 export function installBrowserMocks(showGuide: () => void) {
   Object.defineProperty(window, 'fetch', { value: mockFetch, configurable: false, writable: false });
@@ -15,7 +16,7 @@ export function installBrowserMocks(showGuide: () => void) {
   }
   Object.defineProperty(window, 'Notification', { value: DemoNotification });
   const subscription = { toJSON: () => ({ endpoint: 'https://hongsi-demo.invalid/push', keys: { p256dh: 'demo', auth: 'demo' } }), unsubscribe: async () => true };
-  const registration = { pushManager: { getSubscription: async () => subscription, subscribe: async () => subscription }, unregister: async () => true };
+  const registration = { pushManager: { getSubscription: async () => subscription, subscribe: async () => subscription }, showNotification: async () => {}, getNotifications: async () => [], unregister: async () => true };
   const serviceWorker = Object.assign(new EventTarget(), { register: async () => registration, ready: Promise.resolve(registration), getRegistration: async () => registration, getRegistrations: async () => [] });
   Object.defineProperty(navigator, 'serviceWorker', { value: serviceWorker });
   Object.defineProperty(window, 'PushManager', { value: class {} });
@@ -24,9 +25,9 @@ export function installBrowserMocks(showGuide: () => void) {
     watchPosition() { return 0; }, clearWatch() {},
   } });
   Object.defineProperty(navigator, 'sendBeacon', { value: () => false });
-  XMLHttpRequest.prototype.open = () => { throw new Error('데모에서는 XMLHttpRequest를 허용하지 않습니다.'); };
+  installUploadMock();
   const open = window.open.bind(window);
-  const allowedExternal = (url: URL) => url.protocol === 'https:' && ['github.com', 'ko-fi.com', new URL(LIVE_SITE).hostname].includes(url.hostname);
+  const allowedExternal = (url: URL) => url.protocol === 'https:' && ['github.com', 'ko-fi.com', 'developer.apple.com', new URL(LIVE_SITE).hostname].includes(url.hostname);
   function file(path: string) {
     const source = fileSource(path);
     if (!source) return false;

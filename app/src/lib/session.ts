@@ -4,7 +4,7 @@ const listeners = new Set<() => void>();
 
 export class StaleSessionError extends Error {
   constructor() {
-    super('이전 로그인에서 시작한 요청이에요');
+    super('이전 로그인에서 시작한 요청이에요.');
   }
 }
 
@@ -61,14 +61,5 @@ export function clearUserData() {
   try {
     const p = prefix();
     if (p) Object.keys(localStorage).filter((k) => k.startsWith(p)).forEach((k) => localStorage.removeItem(k));
-  } catch {   }
-}
-
-export function clearLegacyData() {
-  try {
-    for (const key of Object.keys(localStorage)) {
-      if (key.startsWith('hc:') && !key.startsWith('hc:pref:') && !key.startsWith('hc:user:')) localStorage.removeItem(key);
-    }
-    localStorage.removeItem('hc:pref:notices-seen');
   } catch {   }
 }

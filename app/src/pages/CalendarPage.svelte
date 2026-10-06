@@ -1,18 +1,20 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
+  import { onMount, untrack } from 'svelte';
   import { MediaQuery } from 'svelte/reactivity';
   import { isApp } from '../lib/api';
+  import { agendaEntries, type AgendaEntry } from '../lib/agenda';
   import { toggleDone } from '../lib/actions.svelte';
-  import { courseColors, isFinished, isOverdue, isPending } from '../lib/colors';
-  import { ago, dueKey, dueTime, longDay, time, todayKey } from '../lib/format';
+  import { courseColors, isOverdue, isPending } from '../lib/colors';
+  import { ago, dueKey, dueTime, longDay, todayKey } from '../lib/format';
   import { calendar, pref, setPref, todos } from '../lib/store.svelte';
   import { refreshState, refreshTab } from '../lib/refresh.svelte';
   import { settings } from '../lib/settings.svelte';
-  import { isTodoPending, todoDeadline, todoKey } from '../lib/todos.svelte';
+  import { displayedTodos, isTodoPending, todoKey } from '../lib/todos.svelte';
   import { focus, toast } from '../lib/ui.svelte';
   import type { CalendarItem, Todo } from '../lib/types';
   import TodoRow from '../components/TodoRow.svelte';
   import TodoSheet from '../components/TodoSheet.svelte';
+  import Sheet from '../components/Sheet.svelte';
   import AgendaItem from '../components/AgendaItem.svelte';
   import Icon from '../components/Icon.svelte';
   import ItemSheet from '../components/ItemSheet.svelte';
@@ -38,7 +40,7 @@
   let selected = $state(todayKey());
   let filter = $state<Filter>('all');
   let hidden = $state(new Set<number>());
-  type Stat = 'week' | 'assign' | 'vod' | 'todo' | 'missed';
+  type Stat = 'all' | 'week' | 'assign' | 'vod' | 'todo' | 'missed';
   let stat = $state<Stat | null>(null);
   let detailKey = $state<string | null>(null);
   const detail = $derived(calendar.data?.items.find((i) => i.key === detailKey) ?? null);
@@ -47,7 +49,7 @@
     const key = focus.item;
     if (!key || !calendar.data) return;
     if (calendar.data.items.some((i) => i.key === key)) detailKey = key;
-    else toast('이 일정은 삭제됐거나 이번 학기 목록에 없어요.', 'info');
+    else toast('표시할 일정이 없어요.', 'info');
     focus.item = null;
   });
 
@@ -67,6 +69,7 @@
   }
 
   function editTodo(t: Todo) {
+    summaryOpen = false;
     editing = t;
     draft = {};
     todoOpen = true;
@@ -75,9 +78,9 @@
   $effect(() => {
     const id = focus.todo;
     if (id === null || !todos.data) return;
-    const todo = todos.data.find((t) => t.id === id);
+    const todo = displayedTodos().find((t) => t.id === id);
     if (todo) editTodo(todo);
-    else toast('이 할 일은 삭제됐거나 보관 기간이 지났어요.', 'info');
+    else toast('표시할 할 일이 없어요.', 'info');
     focus.todo = null;
   });
 
@@ -98,7 +101,7 @@
   );
 
   const dayItems = $derived(visible.filter((i) => i.due !== null && dueKey(i.due) === selected));
-  const courseTodos = $derived((todos.data ?? []).filter((t) => !hidden.has(t.courseId ?? COMMON)));
+  const courseTodos = $derived(displayedTodos().filter((t) => !hidden.has(t.courseId ?? COMMON)));
   const myTodos = $derived(
     courseTodos.filter((t) => {
       if (filter === 'assignment' || filter === 'vod') return false;
@@ -107,19 +110,18 @@
     }),
   );
   const dayTodos = $derived(myTodos.filter((t) => todoKey(t) === selected));
-  const remainingTodos = $derived(courseTodos.filter((t) => t.doneAt === null)
-    .sort((a, b) => (todoDeadline(a) ?? Infinity) - (todoDeadline(b) ?? Infinity) || a.id - b.id));
+  const dayEntries = $derived(agendaEntries(dayItems, dayTodos));
+  const remainingTodos = $derived(courseTodos.filter((t) => t.doneAt === null));
   const weekTodos = $derived.by(() => {
     const now = Date.now() / 1000;
-    return remainingTodos.filter((t) => isTodoPending(t, now) && todoDeadline(t) !== null && todoDeadline(t)! - now < 7 * 86400);
+    return remainingTodos.filter((t) => isTodoPending(t, now) && t.due !== null && t.due - now < 7 * 86400);
   });
   const upcomingTodos = $derived(
     myTodos
       .filter((t) => {
         const key = todoKey(t);
         return isTodoPending(t) && (key === null || (key > todayKey() && key !== selected));
-      })
-      .slice(0, 8),
+      }),
   );
   const todoColor = (t: Todo) => (t.courseId === null ? 'var(--todo-neutral)' : (colors.get(t.courseId) ?? 'var(--todo-neutral)'));
   const todoCourse = (t: Todo) => (t.courseId === null ? '공통' : courseName(t.courseId));
@@ -134,14 +136,16 @@
         if (i.due === null || !isPending(i)) return false;
         const key = dueKey(i.due);
         return key > todayKey() && key !== selected;
-      })
-      .slice(0, 8),
+      }),
   );
-  const undated = $derived(visible.filter((i) => i.due === null));
+  const upcomingEntries = $derived(agendaEntries(upcoming, upcomingTodos).slice(0, 8));
+  const undatedEntries = $derived(agendaEntries(visible.filter((i) => i.due === null), []));
 
   const statItems = $derived.by(() => {
     const now = Date.now() / 1000;
     switch (stat) {
+      case 'all':
+        return items;
       case 'week':
         return week;
       case 'assign':
@@ -154,10 +158,11 @@
         return [];
     }
   });
-  const statTodos = $derived(stat === 'todo' ? remainingTodos : stat === 'week' ? weekTodos : []);
-  const statNeedsTodos = $derived(stat === 'todo' || stat === 'week');
+  const statTodos = $derived(stat === 'all' ? courseTodos : stat === 'todo' ? remainingTodos : stat === 'week' ? weekTodos : []);
+  const statNeedsTodos = $derived(stat === 'all' || stat === 'todo' || stat === 'week');
   const statLoading = $derived(statNeedsTodos && todos.data === null && !todos.error);
-  const statHasItems = $derived(statItems.length > 0 || statTodos.length > 0);
+  const statEntries = $derived(agendaEntries(statItems, statTodos));
+  const statHasItems = $derived(statEntries.length > 0);
 
   function toggleCourse(id: number) {
     const next = new Set(hidden);
@@ -173,6 +178,18 @@
   }
 
   const narrow = new MediaQuery('max-width: 767px');
+  let courseOpen = $state(false);
+  let summaryOpen = $state(false);
+
+  function selectStat(next: Stat) {
+    stat = !narrow.current && stat === next ? null : next;
+  }
+
+  function openItem(item: CalendarItem) {
+    summaryOpen = false;
+    detailKey = item.key;
+  }
+
   const sideable = new MediaQuery('min-width: 1200px');
   type Layout = 'wide' | 'side';
   let layout = $state<Layout>(pref<Layout>('calendar-layout', isApp ? 'wide' : 'side'));
@@ -196,37 +213,59 @@
     dayPop = true;
   }
 
-  function openFromPop(key: string) {
+  function openFromPop(entry: AgendaEntry) {
     dayPop = false;
-    detailKey = key;
+    if (entry.kind === 'todo') editTodo(entry.value);
+    else openItem(entry.value);
   }
 
   let calWrap: HTMLDivElement | undefined = $state();
+  let calSpace: HTMLDivElement | undefined = $state();
+  let monthView: HTMLDivElement | undefined = $state();
+  let weekView: HTMLDivElement | undefined = $state();
   let dayTitle: HTMLHeadingElement | undefined = $state();
-  let stripOn = $state(false);
+  let monthH = $state(0);
   let stripH = $state(0);
+  let collapse = $state(0);
+  const stripOn = $derived(collapse >= 0.999);
+  const reducedMotion = new MediaQuery('(prefers-reduced-motion: reduce)');
+  const compactInteractive = $derived(collapse >= (reducedMotion.current ? 0.999 : 0.85));
 
   $effect(() => {
-    if (!narrow.current || !calWrap) {
-      stripOn = false;
+    if (!narrow.current || !calWrap || !calSpace || !monthView || !weekView) {
+      collapse = 0;
       return;
     }
-    const wrap = calWrap;
-    const scroller = wrap.closest('.scroller');
+    const space = calSpace, full = monthView, compact = weekView;
+    const scroller = calWrap.closest('.scroller');
     if (!scroller) return;
     let raf = 0;
+    let previousHeight = 0;
     const check = () => {
       raf = 0;
       const bar = document.querySelector('.topbar');
       const edge = (bar ?? scroller).getBoundingClientRect()[bar ? 'bottom' : 'top'];
-      stripOn = wrap.getBoundingClientRect().bottom <= edge + 1;
+      collapse = Math.max(0, Math.min(1, (edge - space.getBoundingClientRect().top) / Math.max(1, monthH - stripH)));
     };
     const onScroll = () => {
       if (!raf) raf = requestAnimationFrame(check);
     };
+    const measure = () => {
+      const height = full.offsetHeight;
+      const adjustment = previousHeight && stripOn ? height - previousHeight : 0;
+      previousHeight = height;
+      monthH = height;
+      stripH = compact.offsetHeight;
+      if (adjustment) scroller.scrollTop += adjustment;
+      onScroll();
+    };
+    const observer = new ResizeObserver(measure);
+    observer.observe(full);
+    observer.observe(compact);
     scroller.addEventListener('scroll', onScroll, { passive: true });
-    check();
+    untrack(measure);
     return () => {
+      observer.disconnect();
       scroller.removeEventListener('scroll', onScroll);
       cancelAnimationFrame(raf);
     };
@@ -237,40 +276,42 @@
   }
 
   function expand() {
-    calWrap?.scrollIntoView({ block: 'start', behavior: 'smooth' });
+    (calSpace ?? calWrap)?.scrollIntoView({ block: 'start', behavior: 'smooth' });
   }
 
 </script>
 
 <div class="page">
-  <div class="toolbar">
-    <div class="filters" role="toolbar" aria-label="일정 필터">
-      {#each FILTERS as f (f.id)}
-        <button class="filter" aria-pressed={filter === f.id} onclick={() => (filter = f.id)}>{f.label}</button>
-      {/each}
+  {#if !narrow.current}
+    <div class="toolbar">
+      <div class="filters" role="toolbar" aria-label="일정 필터">
+        {#each FILTERS as f (f.id)}
+          <button class="filter" aria-pressed={filter === f.id} onclick={() => (filter = f.id)}>{f.label}</button>
+        {/each}
+      </div>
+      {#if sideable.current}
+        <span class="seg layout-seg" role="group" aria-label="캘린더 배치">
+          <button aria-pressed={layout === 'wide'} onclick={() => setLayout('wide')}>
+            <Icon name="layout-below" size={16} stroke={2} />넓게
+          </button>
+          <button aria-pressed={layout === 'side'} onclick={() => setLayout('side')}>
+            <Icon name="layout-side" size={16} stroke={2} />나란히
+          </button>
+        </span>
+      {/if}
+      {#if !isApp}
+      <button
+        class="icon-btn refresh"
+        onclick={() => refreshTab('calendar')}
+        disabled={refreshState.calendar.busy}
+        aria-label="새로고침"
+        title={calendar.at ? `${ago(calendar.at / 1000)} 업데이트` : '새로고침'}
+      >
+        <span class:spin={refreshState.calendar.busy}><Icon name="refresh" size={19} /></span>
+      </button>
+      {/if}
     </div>
-    {#if sideable.current}
-      <span class="seg layout-seg" role="group" aria-label="캘린더 배치">
-        <button aria-pressed={layout === 'wide'} onclick={() => setLayout('wide')}>
-          <Icon name="layout-below" size={16} stroke={2} />넓게
-        </button>
-        <button aria-pressed={layout === 'side'} onclick={() => setLayout('side')}>
-          <Icon name="layout-side" size={16} stroke={2} />나란히
-        </button>
-      </span>
-    {/if}
-    {#if !isApp}
-    <button
-      class="icon-btn refresh"
-      onclick={() => refreshTab('calendar')}
-      disabled={refreshState.calendar.busy}
-      aria-label="새로고침"
-      title={calendar.at ? `${ago(calendar.at / 1000)} 업데이트` : '새로고침'}
-    >
-      <span class:spin={refreshState.calendar.busy}><Icon name="refresh" size={19} /></span>
-    </button>
-    {/if}
-  </div>
+  {/if}
 
   <LoadError resource={calendar} what="캘린더를" />
   <LoadError resource={todos} what="할 일을" />
@@ -282,95 +323,18 @@
       <Skeleton rows={3} height={64} />
     {/if}
   {:else}
-    <div class="summary">
-      <button class="stat" class:on={stat === 'week'} onclick={() => (stat = stat === 'week' ? null : 'week')} aria-expanded={stat === 'week'}>
-        <strong>{todos.data ? week.length + weekTodos.length : todos.error ? '—' : '…'}</strong><span>7일 내 마감</span>
-      </button>
-      <button class="stat" class:on={stat === 'assign'} onclick={() => (stat = stat === 'assign' ? null : 'assign')} aria-expanded={stat === 'assign'}>
-        <strong>{items.filter((i) => i.kind === 'assignment' && isPending(i)).length}</strong><span>남은 과제</span>
-      </button>
-      <button class="stat" class:on={stat === 'vod'} onclick={() => (stat = stat === 'vod' ? null : 'vod')} aria-expanded={stat === 'vod'}>
-        <strong>{items.filter((i) => i.kind === 'vod' && isPending(i)).length}</strong><span>남은 강의</span>
-      </button>
-      <button class="stat" class:on={stat === 'todo'} onclick={() => (stat = stat === 'todo' ? null : 'todo')} aria-expanded={stat === 'todo'}>
-        <strong>{todos.data ? remainingTodos.length : todos.error ? '—' : '…'}</strong><span>남은 할 일</span>
-      </button>
-      <button class="stat danger" class:on={stat === 'missed'} onclick={() => (stat = stat === 'missed' ? null : 'missed')} aria-expanded={stat === 'missed'}>
-        <strong>{items.filter((i) => isOverdue(i)).length}</strong><span>놓친 항목</span>
-      </button>
-    </div>
-    {#if stat}
-      <section class="stat-list" data-kind={stat} class:card={statHasItems || statLoading}>
-        {#if statLoading}
-          <Skeleton rows={1} height={64} />
-        {:else if statHasItems}
-          <div class="list">
-            {#each statTodos as t (t.id)}
-              <TodoRow todo={t} showDate color={todoColor(t)} course={todoCourse(t)} onopen={editTodo} />
-            {/each}
-            {#each (stat === 'todo' ? [] : statItems) as item (item.key)}
-              <AgendaItem
-                {item}
-                showDate
-                color={colors.get(item.courseId) ?? 'var(--text-3)'}
-                course={courseName(item.courseId)}
-                onopen={(i) => (detailKey = i.key)}
-                ontoggle={toggleDone}
-              />
-            {/each}
-          </div>
-        {:else if !statNeedsTodos || todos.data !== null}
-          <EmptyState message={{ week: '7일 안에 마감할 일이 없어요', assign: '남은 과제가 없어요', vod: '남은 강의가 없어요', todo: '남은 할 일이 없어요', missed: '놓친 항목이 없어요' }[stat]} />
-        {/if}
-      </section>
+    {@render summaryControls()}
+    {#if !narrow.current}
+      {@render statResults()}
+      {@render courseFilters()}
     {/if}
 
-    <div class="legend" aria-label="과목 필터">
-      <button class="course all-courses" onclick={toggleAllCourses}>
-        <Icon name={allCoursesSelected ? 'close' : 'tick'} size={14} />
-        {allCoursesSelected ? '전체 해제' : '전체 선택'}
-      </button>
-      <button
-        class="course"
-        class:off={hidden.has(COMMON)}
-        style:--c="var(--todo-neutral)"
-        onclick={() => toggleCourse(COMMON)}
-        aria-pressed={!hidden.has(COMMON)}
-      >
-        <span class="dot sq"></span>공통
-      </button>
-      {#each data.courses as c (c.id)}
-        <button
-          class="course"
-          class:off={hidden.has(c.id)}
-          style:--c={colors.get(c.id)}
-          onclick={() => toggleCourse(c.id)}
-          aria-pressed={!hidden.has(c.id)}
-        >
-          <span class="dot"></span>{c.name}
-        </button>
-      {/each}
-    </div>
-
     <div class="board calendar-board" data-layout={side ? 'side' : 'wide'}>
-      <div class="cal-wrap" bind:this={calWrap}>
-        <MonthCalendar
-          bind:year
-          bind:month
-          bind:selected
-          items={visible}
-          {colors}
-          {names}
-          todos={myTodos}
-          onpick={onPick}
-        />
-      </div>
-
-      {#if narrow.current}
-        <div class="strip-anchor">
-          <div class="strip" class:on={stripOn} inert={!stripOn} bind:clientHeight={stripH}>
+      <div class="cal-wrap" bind:this={calWrap} style:--collapse={collapse} style:--calendar-height="{monthH - (monthH - stripH) * collapse}px">
+        <div class="calendar-dock">
+          <div class="month-view" bind:this={monthView} inert={narrow.current && compactInteractive}>
             <MonthCalendar
-              week
+              {collapse}
               bind:year
               bind:month
               bind:selected
@@ -378,68 +342,71 @@
               {colors}
               {names}
               todos={myTodos}
-              onpick={afterStripPick}
-              onexpand={expand}
+              onpick={onPick}
             />
           </div>
+          {#if narrow.current}
+            <div class="strip" class:on={stripOn} inert={!compactInteractive} bind:this={weekView}>
+              <MonthCalendar
+                week
+                bind:year
+                bind:month
+                bind:selected
+                items={visible}
+                {colors}
+                {names}
+                todos={myTodos}
+                onpick={afterStripPick}
+                onexpand={expand}
+              />
+            </div>
+          {/if}
         </div>
-      {/if}
+      </div>
+      {#if narrow.current}<div class="calendar-space" bind:this={calSpace} style:height="{monthH}px" aria-hidden="true"></div>{/if}
 
-      <div class="lists" style:--strip-h="{stripOn ? stripH : 0}px">
+      <div class="lists" style:--strip-h="{narrow.current ? stripH : 0}px">
+        {#if narrow.current}
+          <div class="list-controls">
+            <div class="filters" role="toolbar" aria-label="일정 필터">
+              {#each FILTERS as f (f.id)}
+                <button class="filter" aria-pressed={filter === f.id} onclick={() => (filter = f.id)}>{f.label}</button>
+              {/each}
+            </div>
+            {#if !isApp}<button class="icon-btn refresh" onclick={() => refreshTab('calendar')} disabled={refreshState.calendar.busy} aria-label="새로고침"><span class:spin={refreshState.calendar.busy}><Icon name="refresh" size={19} /></span></button>{/if}
+          </div>
+        {/if}
         <section class="agenda">
           <h2 class="day-title" bind:this={dayTitle}>
             {longDay(selected)}
             {#if selected === todayKey()}<span class="chip primary">오늘</span>{/if}
             <button class="add" onclick={() => addTodo()}><Icon name="plus" size={16} stroke={2.4} />할 일</button>
           </h2>
-          {#if dayItems.length || dayTodos.length}
-            <div class="list">
-              {#each dayTodos as t (t.id)}
-                <TodoRow todo={t} color={todoColor(t)} course={todoCourse(t)} onopen={editTodo} />
-              {/each}
-              {#each dayItems as item (item.key)}
-                <AgendaItem
-                  {item}
-                  color={colors.get(item.courseId) ?? 'var(--text-3)'}
-                  course={courseName(item.courseId)}
-                  onopen={(i) => (detailKey = i.key)}
-                  ontoggle={toggleDone}
-                />
-              {/each}
-            </div>
+          {#if dayEntries.length}
+            {@render entryList(dayEntries)}
           {:else}
-            <EmptyState message="이날 마감인 일정이 없어요" />
+            <EmptyState message="이날 마감인 일정이 없어요." />
           {/if}
         </section>
 
         <section class="upcoming">
           <h2 class="section-title up-title">다가오는 일정</h2>
-          {#if upcoming.length || upcomingTodos.length}
+          {#if upcomingEntries.length}
             <div class="list">
-              {#each upcomingTodos as t (t.id)}
-                <TodoRow todo={t} showDate color={todoColor(t)} course={todoCourse(t)} onopen={editTodo} />
-              {/each}
-              {#each upcoming as item (item.key)}
-                <AgendaItem
-                  {item}
-                  showDate
-                  color={colors.get(item.courseId) ?? 'var(--text-3)'}
-                  course={courseName(item.courseId)}
-                  onopen={(i) => (detailKey = i.key)}
-                  ontoggle={toggleDone}
-                />
+              {#each upcomingEntries as entry (entry.key)}
+                {@render agendaRow(entry, true)}
               {/each}
             </div>
           {:else}
-            <EmptyState message="다가오는 일정이 없어요" />
+            <EmptyState message="다가오는 일정이 없어요." />
           {/if}
         </section>
-        {#if undated.length}
+        {#if undatedEntries.length}
           <section class="undated">
             <h2 class="section-title">날짜 미정</h2>
             <div class="list">
-              {#each undated as item (item.key)}
-                <AgendaItem {item} color={colors.get(item.courseId) ?? 'var(--text-3)'} course={courseName(item.courseId)} onopen={(i) => (detailKey = i.key)} ontoggle={toggleDone} />
+              {#each undatedEntries as entry (entry.key)}
+                {@render agendaRow(entry)}
               {/each}
             </div>
           </section>
@@ -453,42 +420,29 @@
           <strong>{longDay(selected)}</strong>
           <button class="icon-btn pop-close" onclick={() => (dayPop = false)} aria-label="닫기"><Icon name="close" size={17} /></button>
         </header>
-        {#if dayItems.length || dayTodos.length}
+        {#if dayEntries.length}
           <ul>
-            {#each dayItems as item (item.key)}
+            {#each dayEntries as entry (entry.key)}
               <li>
                 <button
                   class="pop-row"
-                  class:finished={isFinished(item)}
-                  style:--c={colors.get(item.courseId) ?? 'var(--text-3)'}
-                  onclick={() => openFromPop(item.key)}
+                  class:finished={entry.done}
+                  style:--c={entry.kind === 'todo' ? todoColor(entry.value) : (colors.get(entry.value.courseId) ?? 'var(--text-3)')}
+                  onclick={() => openFromPop(entry)}
                 >
-                  <i class="shape" class:vod={item.kind === 'vod'} aria-hidden="true"></i>
-                  <span class="pt">{item.title}</span>
-                  {#if item.due}<span class="ptime">{dueTime(item.due)}</span>{/if}
-                </button>
-              </li>
-            {/each}
-            {#each dayTodos as t (t.id)}
-              <li>
-                <button
-                  class="pop-row"
-                  class:finished={t.doneAt !== null}
-                  style:--c={todoColor(t)}
-                  onclick={() => {
-                    dayPop = false;
-                    editTodo(t);
-                  }}
-                >
-                  <i class="shape todo" aria-hidden="true"></i>
-                  <span class="pt">{t.title}</span>
-                  <span class="ptime">{t.allDay || t.dueAt === null ? '하루 종일' : time(t.dueAt)}</span>
+                  <i class="shape" class:todo={entry.kind === 'todo'} class:vod={entry.kind === 'item' && entry.value.kind === 'vod'} aria-hidden="true"></i>
+                  <span class="pt">{entry.value.title}</span>
+                  {#if entry.kind === 'todo'}
+                    <span class="ptime">{entry.value.allDay || entry.value.due === null ? '하루 종일' : dueTime(entry.value.due)}</span>
+                  {:else if entry.value.due !== null}
+                    <span class="ptime">{dueTime(entry.value.due)}</span>
+                  {/if}
                 </button>
               </li>
             {/each}
           </ul>
         {:else}
-          <EmptyState message="이날 마감인 일정이 없어요" compact />
+          <EmptyState message="이날 마감인 일정이 없어요." compact />
         {/if}
         <button
           class="btn btn-soft pop-add"
@@ -502,11 +456,137 @@
   {/if}
 </div>
 
+{#snippet agendaRow(entry: AgendaEntry, showDate = false)}
+  {#if entry.kind === 'todo'}
+    <TodoRow todo={entry.value} {showDate} color={todoColor(entry.value)} course={todoCourse(entry.value)} onopen={editTodo} />
+  {:else}
+    <AgendaItem
+      item={entry.value}
+      {showDate}
+      color={colors.get(entry.value.courseId) ?? 'var(--text-3)'}
+      course={courseName(entry.value.courseId)}
+      onopen={openItem}
+      ontoggle={toggleDone}
+    />
+  {/if}
+{/snippet}
+
+{#snippet entryList(entries: AgendaEntry[], showDate = false)}
+  {@const pending = entries.filter((entry) => !entry.done)}
+  {@const completed = entries.filter((entry) => entry.done)}
+  {#if pending.length}
+    <div class="list">
+      {#each pending as entry (entry.key)}{@render agendaRow(entry, showDate)}{/each}
+    </div>
+  {/if}
+  {#if completed.length}
+    <details class="completed-list">
+      <summary><span class="completed-arrow"><Icon name="right" size={18} stroke={2.6} /></span><span>완료한 일정 {completed.length}개</span></summary>
+      <div class="list">
+        {#each completed as entry (entry.key)}{@render agendaRow(entry, showDate)}{/each}
+      </div>
+    </details>
+  {/if}
+{/snippet}
+
+{#snippet summaryControls()}
+  {#if narrow.current}
+    <div class="mobile-controls">
+      <button class="summary-trigger" onclick={() => { stat = 'week'; summaryOpen = true; }} aria-haspopup="dialog">
+        <span>7일 내 마감</span><strong>{todos.data ? week.length + weekTodos.length : todos.error ? '—' : '…'}</strong><Icon name="down" size={14} />
+      </button>
+      <button class="course-trigger" class:active={!allCoursesSelected} onclick={() => (courseOpen = true)} aria-haspopup="dialog">
+        과목 필터{#if !allCoursesSelected}<span class="count">{courseIds.filter((id) => !hidden.has(id)).length}/{courseIds.length}</span>{/if}<Icon name="down" size={14} />
+      </button>
+    </div>
+  {:else}
+    {@render stats()}
+  {/if}
+{/snippet}
+
+{#snippet stats()}
+  <div class="summary">
+    {#if narrow.current}
+      <button class="stat" class:on={stat === 'all'} onclick={() => selectStat('all')} aria-expanded={stat === 'all'}>
+        <strong>{todos.data ? items.length + courseTodos.length : todos.error ? '—' : '…'}</strong><span>전체</span>
+      </button>
+    {/if}
+    <button class="stat" class:on={stat === 'week'} onclick={() => selectStat('week')} aria-expanded={stat === 'week'}>
+      <strong>{todos.data ? week.length + weekTodos.length : todos.error ? '—' : '…'}</strong><span>7일 내 마감</span>
+    </button>
+    <button class="stat" class:on={stat === 'assign'} onclick={() => selectStat('assign')} aria-expanded={stat === 'assign'}>
+      <strong>{items.filter((i) => i.kind === 'assignment' && isPending(i)).length}</strong><span>남은 과제</span>
+    </button>
+    <button class="stat" class:on={stat === 'vod'} onclick={() => selectStat('vod')} aria-expanded={stat === 'vod'}>
+      <strong>{items.filter((i) => i.kind === 'vod' && isPending(i)).length}</strong><span>남은 강의</span>
+    </button>
+    <button class="stat" class:on={stat === 'todo'} onclick={() => selectStat('todo')} aria-expanded={stat === 'todo'}>
+      <strong>{todos.data ? remainingTodos.length : todos.error ? '—' : '…'}</strong><span>남은 할 일</span>
+    </button>
+    <button class="stat danger" class:on={stat === 'missed'} onclick={() => selectStat('missed')} aria-expanded={stat === 'missed'}>
+      <strong>{items.filter((i) => isOverdue(i)).length}</strong><span>놓친 항목</span>
+    </button>
+  </div>
+{/snippet}
+
+{#snippet statResults()}
+  {#if stat}
+    <section class="stat-list" data-kind={stat} class:card={statHasItems || statLoading}>
+      {#if statLoading}
+        <Skeleton rows={1} height={64} />
+      {:else if statHasItems}
+        {@render entryList(statEntries, true)}
+      {:else if !statNeedsTodos || todos.data !== null}
+        <EmptyState message={{ all: '표시할 일정이 없어요.', week: '7일 안에 마감할 일이 없어요.', assign: '남은 과제가 없어요.', vod: '남은 강의가 없어요.', todo: '남은 할 일이 없어요.', missed: '놓친 항목이 없어요.' }[stat]} />
+      {/if}
+    </section>
+  {/if}
+{/snippet}
+
+{#snippet courseFilters()}
+  <div class="legend" aria-label="과목 필터">
+    <button class="course all-courses" onclick={toggleAllCourses}>
+      <Icon name={allCoursesSelected ? 'close' : 'tick'} size={14} />
+      {allCoursesSelected ? '전체 해제' : '전체 선택'}
+    </button>
+    <button
+      class="course"
+      class:off={hidden.has(COMMON)}
+      style:--c="var(--todo-neutral)"
+      onclick={() => toggleCourse(COMMON)}
+      aria-pressed={!hidden.has(COMMON)}
+    >
+      <span class="dot sq"></span>공통
+    </button>
+    {#each (data?.courses ?? []) as c (c.id)}
+      <button
+        class="course"
+        class:off={hidden.has(c.id)}
+        style:--c={colors.get(c.id)}
+        onclick={() => toggleCourse(c.id)}
+        aria-pressed={!hidden.has(c.id)}
+      >
+        <span class="dot"></span>{c.name}
+      </button>
+    {/each}
+  </div>
+{/snippet}
+
+{#if narrow.current}
+  <Sheet bind:open={courseOpen} title="과목 필터">
+    <div class="course-picker">{@render courseFilters()}</div>
+    {#snippet footer()}<button class="btn btn-primary w1" onclick={() => (courseOpen = false)}>확인</button>{/snippet}
+  </Sheet>
+  <Sheet bind:open={summaryOpen} title="일정 요약">
+    <div class="summary-picker">{@render stats()}{@render statResults()}</div>
+  </Sheet>
+{/if}
+
 <TodoSheet bind:open={todoOpen} todo={editing} {draft} courses={data?.courses ?? []} {colors} />
 
 <ItemSheet
   item={detail}
-  subtodos={detail ? (todos.data ?? []).filter((t) => t.parentKey === detail.key) : []}
+  subtodos={detail ? displayedTodos().filter((t) => t.parentKey === detail.key) : []}
   onaddtodo={(i) =>
     addTodo({
       courseId: i.courseId,
@@ -522,6 +602,30 @@
 />
 
 <style>
+  .completed-list { margin-top: 12px; }
+  .completed-list summary { display: flex; align-items: center; gap: 8px; min-height: 44px; padding: 10px 0; cursor: pointer; list-style: none; font-size: 15px; font-weight: 700; color: var(--text); }
+  .completed-list summary::-webkit-details-marker { display: none; }
+  .completed-list summary::marker { content: ''; }
+  .completed-arrow { display: flex; flex: none; transition: transform 150ms; }
+  .completed-list[open] > summary .completed-arrow { transform: rotate(90deg); }
+  .mobile-controls { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 12px; }
+  .summary-trigger { display: inline-flex; align-items: center; gap: 7px; min-height: 40px; padding: 0 2px; color: var(--text-2); font-size: 13px; font-weight: 650; }
+  .summary-trigger strong { font-size: 19px; font-variant-numeric: tabular-nums; color: var(--primary-text); }
+  .course-trigger { display: inline-flex; align-items: center; gap: 6px; min-height: 40px; padding: 0 12px; border: 1px solid var(--border); border-radius: 12px; background: var(--surface); font-size: 12px; font-weight: 650; white-space: nowrap; }
+  .course-trigger.active { color: var(--primary-text); border-color: var(--primary); background: var(--primary-weak); }
+  .course-trigger .count { font-variant-numeric: tabular-nums; font-size: 11px; }
+  .list-controls { display: flex; gap: 6px; align-items: center; margin-bottom: 12px; min-width: 0; }
+  .list-controls .filters { flex: 1; min-width: 0; }
+  .list-controls .refresh { width: 36px; height: 40px; }
+  .list-controls .filter { min-height: 40px; padding-inline: 10px; }
+  .course-picker .legend { display: grid; gap: 8px; margin: 0; }
+  .course-picker .course { width: 100%; border-radius: 12px; min-height: 44px; padding: 10px 12px; text-align: left; line-height: 1.5; }
+  .course-picker .course .dot { flex: none; }
+  .course-picker .course.all-courses { justify-content: center; }
+  .summary-picker .summary { grid-template-columns: repeat(3,minmax(0,1fr)); margin-bottom: 16px; }
+  .summary-picker .stat { padding-inline: 8px; }
+  .summary-picker .stat-list.card { padding: 0; border: 0; background: transparent; box-shadow: none; }
+
   .toolbar {
     display: flex;
     align-items: center;
@@ -678,37 +782,43 @@
     scroll-margin-top: calc(var(--topbar-h, 64px) + 8px);
   }
 
-  .strip-anchor {
-    position: sticky;
-    top: var(--topbar-h, 64px);
-    z-index: 15;
-    height: 0;
-  }
+  .calendar-space { flex: none; scroll-margin-top: calc(var(--topbar-h, 64px) + 8px); overflow-anchor: none; }
 
-  .strip {
-    position: absolute;
-    top: 0;
-    left: -16px;
-    right: -16px;
-    opacity: 0;
-    transform: translateY(-10px);
-    pointer-events: none;
-    transition:
-      opacity 0.16s,
-      transform 0.22s var(--ease);
-  }
-
-  .strip.on {
-    opacity: 1;
-    transform: none;
-    pointer-events: auto;
-  }
-
-  @media (min-width: 640px) {
-    .strip {
-      left: -28px;
-      right: -28px;
+  @media (max-width: 767px) {
+    .cal-wrap {
+      position: sticky;
+      top: var(--topbar-h, 64px);
+      z-index: 15;
+      height: 0;
+      pointer-events: none;
     }
+    .calendar-dock {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: var(--calendar-height);
+      overflow: hidden;
+      border-radius: var(--radius);
+      background: var(--surface);
+      pointer-events: auto;
+      overflow-anchor: none;
+    }
+    .month-view { opacity: min(1, max(0, calc((1 - var(--collapse)) / .15))); }
+    .strip {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      opacity: max(0, calc((var(--collapse) - .85) / .15));
+      transform: translate3d(0, calc((1 - var(--collapse)) * 20px), 0);
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .month-view { opacity: 1; }
+    .strip { transform: none; opacity: 0; }
+    .strip.on { opacity: 1; }
   }
 
   .lists {

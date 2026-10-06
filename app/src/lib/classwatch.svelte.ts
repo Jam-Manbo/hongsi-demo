@@ -4,13 +4,13 @@ import { attendance, attendanceReceipts, handleAuthError, lectures, timetable } 
 import { isCurrentSession, onSessionChange, readUserData, sessionVersion, writeUserData } from './session';
 import type { ActiveLecture, AttendanceCourse, AttendanceReceipt, AttendanceSubmission, ClassSlot, MarkKind } from './types';
 
-export const WATCH_BEFORE = 3 * 60_000;
-export const WATCH_AFTER = 10 * 60_000;
+const WATCH_BEFORE = 3 * 60_000;
+const WATCH_AFTER = 10 * 60_000;
 export const POLL_MS = 10_000;
 const STATUS_MS = 60_000;
 const MIN_SPIN_MS = 700;
 const KST = 9 * 3600_000;
-const STORE = 'attendance-confirmed-v1';
+const STORE = 'attendance-confirmed';
 
 export type TodayClass = ClassSlot & { at: number };
 export type Mark = { label: string; kind: MarkKind; source: 'school' | 'app' };
@@ -99,6 +99,23 @@ function lectureRef(l: ActiveLecture, now = Date.now()): CourseRef {
   return matches.length === 1 ? { ...matches[0], lectureKey: l.key } : { code: l.code ?? null, name: l.name, lectureKey: l.key };
 }
 
+export function lectureSession(l: ActiveLecture, now = classWatch.now): TodayClass | null {
+  const sessions = todaySessions(timetable.data?.slots ?? [], now).filter((c) => sameCourse(l, c));
+  const clock = /(?:^|\D)(\d{1,2}):(\d{2})/.exec(l.time);
+  const period = /^\s*([월화수목금토일])\s*(\d{1,2})(?:교시)?\s*$/.exec(l.time);
+  const matches = clock
+    ? sessions.filter((c) => c.start === `${clock[1].padStart(2, '0')}:${clock[2]}`)
+    : period ? sessions.filter((c) => c.weekday === '월화수목금토일'.indexOf(period[1]) && c.periods[0] === Number(period[2]))
+    : sessions.filter((c) => inWindow(c, now));
+  return matches.length === 1 ? matches[0] : !clock && !period && sessions.length === 1 ? sessions[0] : null;
+}
+
+export function classScheduleLabel(c: ClassSlot | null, fallback = ''): string {
+  if (!c) return fallback.trim();
+  const period = `${'월화수목금토일'[c.weekday] ?? ''}${c.periods[0] ?? ''}`;
+  return [period, c.start ? `${c.start} 수업` : '', c.room ?? ''].filter(Boolean).join(' ');
+}
+
 export function markFor(c: CourseRef): Mark | null {
   if (c.at !== undefined && dayKey(c.at) !== todayKey()) return null;
   const matches = (attendance.data ?? []).filter((course) => sameCourse(course, c));
@@ -124,6 +141,28 @@ export function sessionState(c: TodayClass): { label: string; cls: string } {
   if (c.at > classWatch.now) return { label: inWindow(c, classWatch.now) ? '확인 중' : '예정', cls: inWindow(c, classWatch.now) ? 'primary' : '' };
   if (inWindow(c, classWatch.now) && !fresh && !lectures.error) return { label: '확인 중', cls: 'primary' };
   return { label: '확인 불가', cls: '' };
+}
+
+export function attendanceWidgetSnapshot() {
+  return {
+    date: todayKey(),
+    loaded: lectures.data !== null,
+    error: lectures.error,
+    timetableLoaded: timetable.data !== null,
+    timetableError: timetable.error,
+    checkedAt: lectures.at,
+    sessions: todaySessions(timetable.data?.slots ?? []).map((session) => ({
+      ...session,
+      identity: keyOf(session),
+      mark: markFor(session),
+      seenOpen: classWatch.seenOpen.includes(keyOf(session)),
+    })),
+    active: (lectures.data?.items ?? []).map((lecture) => ({
+      key: lecture.key, name: lecture.name, time: lecture.time, code: lecture.code,
+      scheduleLabel: classScheduleLabel(lectureSession(lecture), lecture.time),
+      identity: keyOf(lectureRef(lecture)), mark: lectureMark(lecture),
+    })),
+  };
 }
 
 function persist() { writeUserData(STORE, $state.snapshot(classWatch.receipts)); }
@@ -172,7 +211,7 @@ async function syncReceipts() {
       }
     }
     if (!isCurrentSession(version)) return;
-    classWatch.shareError = failed ? '출석은 확인했지만 기기 간 공유를 완료하지 못했어요. 연결되면 다시 시도해요.' : '';
+    classWatch.shareError = failed ? '출석은 확인했지만 다른 기기에 기록을 공유하지 못했어요. 서버에 연결되면 다시 시도할게요.' : '';
     await attendanceReceipts.load(true);
   })().finally(() => { if (pendingSync === task) pendingSync = null; });
   pendingSync = task;
@@ -249,13 +288,13 @@ export function afterSubmit(submission: AttendanceSubmission) {
   if (!receipt || !validReceipt(receipt)) return false;
   classWatch.receipts = [...classWatch.receipts.filter((entry) => entry.receipt.lecture.key !== receipt.lecture.key && validReceipt(entry.receipt)), { receipt, synced: submission.synced }];
   persist();
-  classWatch.shareError = submission.synced ? '' : '출석은 확인했지만 기기 간 공유를 완료하지 못했어요. 연결되면 다시 시도해요.';
+  classWatch.shareError = submission.synced ? '' : '출석은 확인했지만 다른 기기에 기록을 공유하지 못했어요. 서버에 연결되면 다시 시도할게요.';
   void syncReceipts();
   const version = sessionVersion(), day = todayKey(), ref = lectureRef(receipt.lecture, receipt.confirmedAt);
   if (ref.code) setTimeout(() => { if (isCurrentSession(version) && todayKey() === day) void checkSchool(ref); }, 1500);
   return true;
 }
-export function resetClassWatch() {
+function resetClassWatch() {
   classWatch.receipts = loadSaved(); classWatch.school = {}; classWatch.seenOpen = []; classWatch.shareError = '';
   classWatch.day = todayKey(); classWatch.polling = false; classWatch.current = null; classWatch.nextAt = 0;
   statusAt = 0; sharedAt = 0; pendingCheck = null; pendingSync = null;

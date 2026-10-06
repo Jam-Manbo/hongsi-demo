@@ -1,13 +1,16 @@
 <script lang="ts">
   import { onMount, untrack } from 'svelte';
+  import { watchClock } from './lib/clock.svelte';
+  import { watchCalendarState } from './lib/calendar-sync.svelte';
   import { watchAppUpdates } from './lib/app-update.svelte';
+  import { publishWidgetTheme, publishWidgets, widgetSnapshot, openWidgetIntent } from './lib/widgets';
   import AppUpdate from './components/AppUpdate.svelte';
   import NotificationPermission from './components/NotificationPermission.svelte';
   import DoneConfirm from './components/DoneConfirm.svelte';
   import DownloadPage from './pages/DownloadPage.svelte';
   import { ApiError, api, isApp, native } from './lib/api';
   import { isPending } from './lib/colors';
-  import { isTodoPending, todoDeadline } from './lib/todos.svelte';
+  import { displayedTodos, isTodoPending } from './lib/todos.svelte';
   import { errorText } from './lib/net.svelte';
   import { syncSeatReminders } from './lib/seat.svelte';
   import { syncDueReminders } from './lib/reminders';
@@ -16,20 +19,15 @@
   import { openNotification } from './lib/notification-navigation';
   import { seatPrefs } from './lib/seat.svelte';
   import { refreshState, refreshTab } from './lib/refresh.svelte';
-  import { settings } from './lib/settings.svelte';
+  import { settings, accountPreferences, watchAccountPreferences } from './lib/settings.svelte';
   import {
     app,
-    attendance,
     calendar,
     endSession,
     logoutSession,
     startSession,
     lectures,
-    meals,
-    notices,
     seatSession,
-    seats,
-    timetable,
     todos,
   } from './lib/store.svelte';
   import { TABS, go, openSeats, route, toast } from './lib/ui.svelte';
@@ -49,12 +47,12 @@
   import SeatsPage from './pages/SeatsPage.svelte';
 
   const TITLES = { home: '홈', calendar: '캘린더', seats: '열람실', attendance: '출결', meals: '학식' } as const;
-  const downloadPage = !isApp && location.pathname.replace(/\/$/, '') === '/download';
+  const downloadPage = !isApp && ['/download', '/download/versions', '/download/ios'].includes(location.pathname.replace(/\/$/, ''));
 
   const weekDue = $derived.by(() => {
     const now = Date.now() / 1000;
     const school = (calendar.data?.items ?? []).filter((i) => isPending(i, now) && i.due !== null && i.due - now < 7 * 86_400).length;
-    const personal = (todos.data ?? []).filter((t) => isTodoPending(t, now) && todoDeadline(t) !== null && todoDeadline(t)! - now < 7 * 86_400).length;
+    const personal = displayedTodos().filter((t) => isTodoPending(t, now) && t.due !== null && t.due - now < 7 * 86_400).length;
     return school + personal;
   });
   const attendOpen = $derived(lectures.at > Date.now() - 10 * 60_000 && (lectures.data?.items.length ?? 0) > 0);
@@ -62,6 +60,27 @@
   let profileOpen = $state(false);
   let bootError = $state('');
   let booting = false;
+
+  $effect(() => {
+    if (!isApp || app.booting) return;
+    void publishWidgetTheme(settings.theme).catch(() => {});
+  });
+
+  $effect(() => {
+    if (!isApp || app.booting) return;
+    const snapshot = widgetSnapshot();
+    if (!snapshot) { void publishWidgets(''); return; }
+    const timer = setTimeout(() => { void publishWidgets(snapshot); }, 200);
+    return () => clearTimeout(timer);
+  });
+
+  $effect(() => { if (!app.booting && app.profile) void untrack(openWidgetIntent); });
+  onMount(() => {
+    const open = () => { if (document.visibilityState === 'visible') void openWidgetIntent(); };
+    window.addEventListener('hongsi-widget', open);
+    document.addEventListener('visibilitychange', open);
+    return () => { window.removeEventListener('hongsi-widget', open); document.removeEventListener('visibilitychange', open); };
+  });
 
   async function boot() {
     if (booting) return;
@@ -76,7 +95,7 @@
         endSession();
         bootError = '';
       } else {
-        bootError = errorText(e, '홍시를 열지 못했어요');
+        bootError = errorText(e, '홍시를 열지 못했어요.');
       }
     } finally {
       booting = false;
@@ -86,22 +105,26 @@
 
   onMount(() => {
     if (downloadPage) { app.booting = false; return; }
+    const stopClock = watchClock();
     const stopUpdates = watchAppUpdates();
     let disposed = false;
     let cleanup = () => {};
-    const notificationReady = initNotifications().then((fn) => { if (disposed) fn(); else cleanup = fn; });
-    void boot().then(async () => {
+    const bootReady = boot();
+    // Native plugins must be ready; browser push messages need a listener during boot.
+    const notificationReady = (isApp ? bootReady : Promise.resolve())
+      .then(() => initNotifications())
+      .then((fn) => { if (disposed) fn(); else cleanup = fn; });
+    void bootReady.then(async () => {
       await notificationReady;
-      if (!disposed) {
-        await showFirstNotificationPermission();
-        if (!disposed && app.profile && !app.loggingOut) await refreshBackground();
-      }
+      if (disposed) return;
+      await showFirstNotificationPermission();
+      if (!disposed && app.profile && !app.loggingOut) await refreshBackground();
     });
-    return () => { disposed = true; cleanup(); stopUpdates(); };
+    return () => { disposed = true; cleanup(); stopUpdates(); stopClock(); };
   });
 
   $effect(() => {
-    if (!app.profile || !notificationState.pending) return;
+    if (app.booting || app.loggingOut || !app.profile || !notificationState.pending) return;
     const intent = untrack(takeNotificationIntent);
     if (intent) void untrack(() => openNotification(intent));
   });
@@ -112,16 +135,16 @@
     const refresh = async (force = true) => {
       if (app.loggingOut || document.visibilityState !== 'visible' || Date.now() - last < 30_000) return;
       last = Date.now();
-      await Promise.all([calendar.load(force), todos.load(force), seatSession.load(force)]);
+      await Promise.all([calendar.load(force), todos.load(true), seatSession.load(true)]);
       await refreshNotifications();
       await refreshBackground();
     };
     void untrack(() => { void refreshBackground(true); void refresh(false); });
-    const resume = () => { void refresh(); };
+    const resume = () => { void refresh(false); };
     window.addEventListener('focus', resume);
     window.addEventListener('online', resume);
     document.addEventListener('visibilitychange', resume);
-    const tick = setInterval(resume, 5 * 60_000);
+    const tick = setInterval(() => { void refresh(); }, 5 * 60_000);
     return () => {
       clearInterval(tick);
       window.removeEventListener('focus', resume);
@@ -132,7 +155,7 @@
 
   $effect(() => {
     if (!app.profile || app.loggingOut) return;
-    settings.alertLeads; seatPrefs.alerts;
+    seatPrefs.alerts;
     void untrack(syncBackgroundPreferences);
   });
 
@@ -153,6 +176,15 @@
     };
   });
 
+  $effect(() => {
+    if (!app.account || app.loggingOut) return;
+    return untrack(() => {
+      const stopPreferences = watchAccountPreferences();
+      const stopCalendar = watchCalendarState();
+      return () => { stopPreferences(); stopCalendar(); };
+    });
+  });
+
   let topH = $state(64);
 
   $effect(() => {
@@ -161,9 +193,10 @@
 
   $effect(() => {
     const on = !!app.profile;
+    if (on && !accountPreferences.loaded) return;
     syncDueReminders(
       on ? (calendar.data?.items ?? []) : [],
-      on ? (todos.data ?? []) : [],
+      on ? displayedTodos() : [],
       calendar.data?.courses ?? [],
       settings.alertLeads,
     );
@@ -176,7 +209,7 @@
       const a = (e.target as Element | null)?.closest?.('a[href]') as HTMLAnchorElement | null;
       if (!a || a.target !== '_blank' || !/^https?:/.test(a.href)) return;
       e.preventDefault();
-      native.openUrl(a.href).catch(() => toast('브라우저를 열지 못했어요', 'error'));
+      native.openUrl(a.href).catch(() => toast('브라우저를 열지 못했어요.', 'error'));
     };
     document.addEventListener('click', onClick);
     return () => document.removeEventListener('click', onClick);
@@ -187,9 +220,9 @@
     try {
       await logoutSession(scope);
       profileOpen = false;
-      toast(scope === 'all' ? '모든 기기에서 로그아웃했어요' : '로그아웃했어요', 'success');
-    } catch (e) {
-      toast(`${scope === 'all' ? '모든 기기 로그아웃을' : '로그아웃을'} 완료하지 못했어요. ${errorText(e, '연결을 확인한 뒤 다시 시도해 주세요.')}`, 'error', 7000);
+      toast(scope === 'all' ? '모든 기기에서 로그아웃했어요.' : '로그아웃했어요.', 'success');
+    } catch {
+      toast('로그아웃을 완료하지 못했어요.', 'error', 7000);
     }
   }
 </script>
@@ -223,7 +256,7 @@
           <a href="#/{t.id}" onclick={() => { if (t.id === 'seats') openSeats('T'); }} class="nav" aria-current={on ? 'page' : undefined}>
             <span class="nav-ico">
               <Icon name={t.icon} size={21} stroke={on ? 2.1 : 1.8} />
-              {#if t.id === 'attendance' && attendOpen}<i class="live-dot" aria-label="지금 출석 가능"></i>{/if}
+              {#if t.id === 'attendance' && attendOpen}<i class="live-dot" aria-label="빠른 출결 가능"></i>{/if}
             </span>
             <span class="nav-label">{t.label}</span>
             {#if t.id === 'calendar' && weekDue}<span class="count" aria-label="7일 안에 마감 {weekDue}개">{weekDue}</span>{/if}
@@ -284,7 +317,7 @@
         <button class="tab" aria-current={route.tab === t.id ? 'page' : undefined} onclick={() => t.id === 'seats' ? openSeats('T') : go(t.id)}>
           <span class="nav-ico">
             <Icon name={t.icon} size={23} stroke={route.tab === t.id ? 2.1 : 1.7} />
-            {#if t.id === 'attendance' && attendOpen}<i class="live-dot" aria-label="지금 출석 가능"></i>{/if}
+            {#if t.id === 'attendance' && attendOpen}<i class="live-dot" aria-label="빠른 출결 가능"></i>{/if}
           </span>
           <span>{t.label}</span>
         </button>

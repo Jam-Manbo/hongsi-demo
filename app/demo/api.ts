@@ -1,5 +1,5 @@
-import type { Attachment, FileSource, SeatPeriod, SubmissionView, TodoInput } from '../src/lib/types';
-import { PROFILE, courses, seconds, finished, mealsSeed, seatsSeed, timetableSeed, sampleFile } from './data';
+import type { Attachment, AttendanceReceipt, CalendarState, FileSource, SeatPeriod, SubmissionJob, SubmissionView, TodoInput } from '../src/lib/types';
+import { PROFILE, activeLecture, courses, currentCourses, currentTerm, today, seconds, finished, mealsSeed, seatsSeed, timetableSeed, sampleFile } from './data';
 import { auth, data, login, logout, persist } from './storage';
 import { pushRequest } from './push';
 import { ApiError } from './errors';
@@ -18,6 +18,9 @@ function activeSeat() {
   if (seat && seat.expiresAt <= seconds()) { data().seat = null; persist(); return null; }
   return seat;
 }
+function finishLinkedTodos(key: string) {
+  for (const todo of data().todos) if (todo.parentKey === key && todo.doneAt === null) todo.doneAt = seconds();
+}
 function validateAlertLeads(value: unknown): number[] | null {
   if (value == null) return null;
   if (!Array.isArray(value) || value.length > 5 || new Set(value).size !== value.length || value.some(min => ![1440, 180, 60, 10, 0].includes(min))) invalid('알림 시간이 올바르지 않아요.');
@@ -28,8 +31,10 @@ function validateTodo(body: TodoInput): TodoInput {
   if (!title) invalid('할 일 제목을 입력해 주세요.');
   if (title.length > 200) invalid('제목은 200자 이하로 입력해 주세요.');
   if (body.courseId !== null && !courses.some(c => c.id === body.courseId)) invalid('과목을 확인해 주세요.');
-  if (body.dueAt !== null && !Number.isFinite(body.dueAt)) invalid('마감 시간을 확인해 주세요.');
-  return { title, note: String(body.note ?? ''), courseId: body.courseId, parentKey: body.parentKey, dueAt: body.dueAt, allDay: !!body.allDay, notify: !!body.notify, alertLeads: validateAlertLeads(body.alertLeads) };
+  if (!Number.isFinite(body.due)) invalid('날짜를 선택해 주세요.');
+  const note = String(body.note ?? '');
+  if (note.length > 2000) invalid('메모는 2000자까지 입력할 수 있어요.');
+  return { title, note, courseId: body.courseId, parentKey: body.parentKey, due: body.due, allDay: !!body.allDay, notify: !!body.notify, alertLeads: validateAlertLeads(body.alertLeads) };
 }
 function handle(method: string, path: string, body: any = {}): unknown {
   const url = new URL(path, 'https://demo.invalid');
@@ -38,26 +43,62 @@ function handle(method: string, path: string, body: any = {}): unknown {
     if (String(body.id).trim().toLowerCase() !== 'demo' || body.password !== 'demo') throw new ApiError(401, 'login_rejected', '아이디와 비밀번호에 demo를 입력해 주세요.');
     login(!!body.remember); return { profile: PROFILE };
   }
-  if (method === 'POST' && route === '/api/auth/logout') { logout(); return { ok: true }; }
+  if (method === 'POST' && ['/api/auth/logout', '/api/auth/logout-all'].includes(route)) { logout(); localStorage.removeItem('hongsi-demo:push'); return { ok: true }; }
   if (!auth()) throw new ApiError(401, 'login_required', '데모에 로그인해 주세요.');
-  if (route.startsWith('/api/push/')) return pushRequest(method, url, body);
+  if (route === '/api/auth/recover' && method === 'POST') return { ok: true };
+  if (route.startsWith('/api/push/') || route.startsWith('/api/background/')) return pushRequest(method, url, body);
   if (route === '/api/me') return { profile: PROFILE, remembered: auth().remembered };
+  if (route === '/api/preferences') {
+    if (method === 'PATCH') {
+      if ('mealPlace' in body) { if (!['dorm', 'staff'].includes(body.mealPlace)) invalid('식당을 확인해 주세요.'); d.preferences.mealPlace = body.mealPlace; }
+      if ('timetableDisplay' in body) { if (!['full', 'fit'].includes(body.timetableDisplay)) invalid('시간표 표시 방식을 확인해 주세요.'); d.preferences.timetableDisplay = body.timetableDisplay; }
+      if ('semesterDisplay' in body) { if (!['current', 'all'].includes(body.semesterDisplay)) invalid('학기 표시 방식을 확인해 주세요.'); d.preferences.semesterDisplay = body.semesterDisplay; }
+      if ('alertLeads' in body) d.preferences.alertLeads = validateAlertLeads(body.alertLeads) ?? [60];
+      d.preferences.updatedAt = Math.max(Date.now(), d.preferences.updatedAt + 1);
+    }
+    return d.preferences;
+  }
+  if (route === '/api/calendar/state') return {
+    checks: Object.fromEntries(d.calendar.items.filter(i => i.doneOverride !== null).map(i => [i.key, i.doneOverride!])),
+    alertsOff: d.calendar.items.filter(i => !i.alert).map(i => i.key),
+    alertLeads: Object.fromEntries(d.calendar.items.filter(i => i.alertLeads !== null).map(i => [i.key, i.alertLeads!])),
+  } satisfies CalendarState;
   if (route === '/api/calendar') {
     for (const i of d.calendar.items) {
       if (i.kind === 'assignment' && i.status !== 'submitted') i.status = i.due !== null && i.due < seconds() ? 'overdue' : 'not_submitted';
       i.done = i.doneOverride ?? finished(i);
     }
-    const items = [...d.calendar.items].sort((a, b) => (a.due ?? Infinity) - (b.due ?? Infinity));
-    return { ...d.calendar, items, fetchedAt: seconds() };
+    const semesterDisplay = url.searchParams.get('semester') === 'all' ? 'all' : 'current';
+    const visibleCourses = semesterDisplay === 'all' ? courses : currentCourses;
+    const items = d.calendar.items.filter(i => visibleCourses.some(c => c.id === i.courseId)).sort((a, b) => (a.due ?? Infinity) - (b.due ?? Infinity));
+    return { ...d.calendar, courses: visibleCourses, items, semesterDisplay, currentTerm, fetchedAt: seconds() };
   }
   let m = /^\/api\/calendar\/items\/(.+)\/(done|alert|alert-leads|verify)$/.exec(route);
   if (m) {
     const i = d.calendar.items.find(i => i.key === m![1]);
     if (!i) throw new ApiError(404, 'not_found', '항목을 찾지 못했어요.');
-    if (m[2] === 'done') { i.doneOverride = typeof body.done === 'boolean' ? body.done : null; i.done = i.doneOverride ?? finished(i); return { key: i.key, done: i.done }; }
+    if (m[2] === 'done') { i.doneOverride = typeof body.done === 'boolean' ? body.done : null; i.done = i.doneOverride ?? finished(i); if (i.done) finishLinkedTodos(i.key); return { key: i.key, done: i.done }; }
     if (m[2] === 'alert') { i.alert = !!body.on; return { key: i.key, on: i.alert }; }
     if (m[2] === 'alert-leads') { i.alertLeads = validateAlertLeads(body.leads); return { key: i.key, leads: i.alertLeads }; }
     return { key: i.key, status: i.status, finished: finished(i) };
+  }
+  m = /^\/api\/assign\/(\d+)\/submission\/jobs\/([a-f0-9]{32})$/.exec(route);
+  if (m) {
+    const cmid = Number(m[1]), id = m[2], key = `${cmid}:${id}`;
+    if (method === 'GET' || d.jobs[key]) {
+      const job = d.jobs[key];
+      if (!job) throw new ApiError(404, 'not_found', '제출 내역을 찾지 못했어요.');
+      return job;
+    }
+    if (method === 'POST') {
+      const result = handle('POST', `/api/assign/${cmid}/submission`, body) as SubmissionView;
+      const files: Attachment[] = body.files;
+      const total = files.reduce((sum, file) => sum + (file.size ?? 0), 0);
+      const job: SubmissionJob = { id, revision: 1, status: 'complete', result, error: null,
+        progress: { stage: 'verify', fileName: null, fileCount: files.length, uploadedFiles: files.length, sentBytes: total, totalBytes: total } };
+      d.jobs[key] = job;
+      return job;
+    }
   }
   m = /^\/api\/assign\/(\d+)\/submission$/.exec(route);
   if (m) {
@@ -73,26 +114,44 @@ function handle(method: string, path: string, body: any = {}): unknown {
     if (files.some(f => (f.size ?? 0) > current.config.maxBytes)) invalid('파일당 용량 제한을 초과했어요.');
     if (files.reduce((n, f) => n + (f.size ?? 0), 0) > 100 * 1024 * 1024) invalid('합계 100MB를 초과했어요.');
     d.submissions[String(cmid)] = files;
-    const i = item(cmid); i.status = 'submitted'; i.done = true; i.doneOverride = null; i.modified = seconds();
+    const i = item(cmid); i.status = 'submitted'; i.done = true; i.doneOverride = true; i.modified = seconds();
+    finishLinkedTodos(i.key);
     return view(cmid);
   }
   if (route === '/api/timetable') return timetableSeed();
-  if (route === '/api/attendance/active') return { items: d.attended ? [] : [{ key: 'demo-attendance-1', name: '과목1', code: courses[0].code, time: '10:00' }], message: null };
+  if (route === '/api/attendance/active') return { items: d.attended ? [] : [activeLecture()], message: null };
+  if (route === '/api/attendance/receipts') {
+    if (method === 'PUT') {
+      const receipt = body.receipt as AttendanceReceipt;
+      if (body.account !== PROFILE.studentId || receipt?.lecture?.key !== activeLecture().key || receipt.date !== today() || !['present', 'late', 'excused'].includes(receipt.kind)) invalid('출석 기록을 확인해 주세요.');
+      d.receipts = [...d.receipts.filter(r => r.lecture.key !== receipt.lecture.key), receipt];
+      return { ok: true };
+    }
+    return d.receipts.filter(r => r.date === today());
+  }
   if (route === '/api/attendance/submit') {
-    if (body.code !== '1234') return { message: '출결번호가 일치하지 않습니다.' };
-    if (body.lectureKey !== 'demo-attendance-1') invalid('수업을 확인해 주세요.');
+    if (body.code !== '1234') return { message: '출결번호가 일치하지 않습니다.', receipt: null, synced: false };
+    if (body.lectureKey !== activeLecture().key) invalid('수업을 확인해 주세요.');
     if (!d.attended) {
       d.attended = true;
       const date = new Date(Date.now() + 9 * 3600_000);
-      d.attendance[0].weeks[4].sessions = [0, 1].map(() => ({ date: `${date.getUTCMonth() + 1}/${date.getUTCDate()}`, kind: 'present', mark: '출석' }));
-      d.attendance[0].summary.present += 2; d.attendance[0].summary.planned -= 2;
+      d.attendance[0].weeks[4].sessions = [0, 1].map(index => ({ date: `${date.getUTCMonth() + 1}/${date.getUTCDate()}`, kind: index === 0 ? 'present' : 'planned', mark: index === 0 ? '출석' : '예정' }));
+      d.attendance[0].summary.present++; d.attendance[0].summary.planned--;
     }
-    return { message: '출석이 완료되었습니다.' };
+    const receipt: AttendanceReceipt = { lecture: activeLecture(), date: today(), kind: 'present', confirmedAt: Date.now() };
+    d.receipts = [receipt];
+    return { message: '출석확인이 완료되었습니다.[출석]', receipt, synced: true };
   }
   if (route === '/api/attendance/status') return d.attendance;
   if (route === '/api/attendance/course') return d.attendance.find(c => c.code === url.searchParams.get('code')) ?? d.attendance[0];
   if (route === '/api/todos') {
     if (method === 'GET') return d.todos;
+    if (body.parentKey) {
+      const parent = d.calendar.items.find(i => i.key === body.parentKey);
+      if (!parent) invalid('연결할 과제·강의를 확인할 수 없어요.');
+      if (parent.done) throw new ApiError(409, 'conflict', '완료된 일정에는 할 일을 추가할 수 없어요.');
+      body = { ...body, courseId: parent.courseId };
+    }
     const t = { ...validateTodo(body), id: Math.max(0, ...d.todos.map(t => t.id)) + 1, doneAt: null };
     d.todos.push(t); return t;
   }
@@ -101,8 +160,14 @@ function handle(method: string, path: string, body: any = {}): unknown {
     const index = d.todos.findIndex(t => t.id === Number(m![1]));
     if (index < 0) throw new ApiError(404, 'not_found', '할 일을 찾지 못했어요.');
     if (method === 'DELETE') { d.todos.splice(index, 1); return { ok: true }; }
-    if (m[2]) d.todos[index].doneAt = body.done ? seconds() : null;
-    else d.todos[index] = { ...d.todos[index], ...validateTodo(body) };
+    if (m[2]) {
+      const parent = d.calendar.items.find(i => i.key === d.todos[index].parentKey);
+      d.todos[index].doneAt = body.done || parent?.done ? d.todos[index].doneAt ?? seconds() : null;
+    } else {
+      const existing = d.todos[index];
+      if (body.parentKey !== existing.parentKey || (existing.parentKey && body.courseId !== existing.courseId)) invalid('연결된 과제·강의는 변경할 수 없어요.');
+      d.todos[index] = { ...existing, ...validateTodo(body) };
+    }
     return d.todos[index];
   }
   if (route === '/api/meals') return mealsSeed();

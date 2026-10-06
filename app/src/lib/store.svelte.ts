@@ -1,8 +1,7 @@
-import { ApiError, api, isApp, onSessionRevoked } from './api';
+import { ApiError, api, isApp, onSessionRevoked, onSchoolAuthRequired } from './api';
 import { normalizeCalendar } from './calendar-data';
 import { errorText, onReconnect, troubleOf, type Trouble } from './net.svelte';
-import { clearLegacyData, clearUserData, isStaleSession, onSessionChange, readUserData, setSessionUser, writeUserData } from './session';
-import { toastOnce } from './ui.svelte';
+import { clearUserData, isStaleSession, onSessionChange, readUserData, setSessionUser, writeUserData } from './session';
 import type {
   ActiveLectures,
   AttendanceCourse,
@@ -13,6 +12,7 @@ import type {
   Profile,
   SeatSession,
   SeatsData,
+  SemesterDisplay,
   Timetable,
   Todo,
 } from './types';
@@ -47,8 +47,7 @@ export function onBeforeLogout(prepare: () => Promise<void>) {
   return () => logoutPreparations.delete(prepare);
 }
 
-export function startSession(profile: Profile, remembered: boolean, id = profile.studentId ?? '') {
-  clearLegacyData();
+export function startSession(profile: Profile, remembered: boolean, id = profile.studentId) {
   app.account = id.trim().toUpperCase() || null;
   setSessionUser(app.account);
   app.notice = '';
@@ -88,20 +87,31 @@ export function logoutSession(scope: 'device' | 'all' = 'device') {
 function handleSessionRevoked() {
   if (app.loggingOut) return;
   if (app.profile || app.account) endSession();
-  app.notice = '로그인 정보가 해제됐어요. 다시 로그인해 주세요.';
+  app.notice = '다시 로그인해 주세요.';
 }
+function handleSchoolSessionExpired() {
+  if (!app.profile || app.loggingOut) return;
+  void logoutSession().catch(() => {
+    if (app.profile || app.account) endSession();
+  }).then(() => {
+    app.notice = '로그인이 만료됐어요.';
+  });
+}
+
 onSessionRevoked(handleSessionRevoked);
+onSchoolAuthRequired(handleSchoolSessionExpired);
 
 export function handleAuthError(e: unknown): boolean {
   if (isStaleSession(e)) return true;
+  if (e instanceof ApiError && ['session_expired', 'classroom_token_expired', 'school_reauth_required'].includes(e.code)) {
+    handleSchoolSessionExpired();
+    return true;
+  }
   if (e instanceof ApiError && e.status === 401 && e.code !== 'login_rejected') {
     if (e.code === 'session_revoked') { handleSessionRevoked(); return true; }
     if (app.loggingOut) return true;
-    if (e.code === 'session_expired') void logoutSession().catch((err) => {
-      toastOnce(`학교 로그인이 만료됐지만 로그아웃을 완료하지 못했어요. ${errorText(err, '연결을 확인해 주세요.')} 내 정보에서 다시 로그아웃해 주세요.`, 'error', 8000);
-    });
-    else endSession();
-    app.notice = e.code === 'session_expired' ? '학교 로그인이 만료됐어요. 다시 로그인해 주세요.' : '';
+    endSession();
+    app.notice = '';
     return true;
   }
   return false;
@@ -115,7 +125,10 @@ export class Resource<T> {
   trouble = $state<Trouble | 'other' | null>(null);
   private lastStart = 0;
   private revision = 0;
+  private generation = 0;
+  private mutations = 0;
   private pending: Promise<void> | null = null;
+  private refreshAfterMutation = false;
 
   constructor(
     private key: string,
@@ -133,12 +146,18 @@ export class Resource<T> {
     }
   }
 
+  setKey(key: string) {
+    if (this.key === key) return;
+    this.key = key;
+    this.restore();
+  }
+
   get stale() {
     return Date.now() - this.at > this.maxAgeMs;
   }
 
   load(force = false): Promise<void> {
-    if (app.loggingOut) return Promise.resolve();
+    if (app.loggingOut || this.mutations) return Promise.resolve();
     if (this.pending) return this.pending;
     if (!force && this.data !== null && !this.stale) return Promise.resolve();
     if (Date.now() - this.lastStart < 3000) return Promise.resolve();
@@ -149,6 +168,17 @@ export class Resource<T> {
     this.pending = pending;
     void pending.finally(() => { if (this.pending === pending) this.pending = null; });
     return pending;
+  }
+
+  refresh(): Promise<void> {
+    if (this.mutations) {
+      this.refreshAfterMutation = true;
+      return Promise.resolve();
+    }
+    this.revision += 1;
+    this.pending = null;
+    this.lastStart = 0;
+    return this.load(true);
   }
 
   private async fetch(force: boolean, revision: number) {
@@ -162,21 +192,44 @@ export class Resource<T> {
       if (revision !== this.revision) return;
       if (!handleAuthError(e)) {
         this.trouble = (e instanceof ApiError ? troubleOf(e.status, e.code) : null) ?? 'other';
-        this.error = errorText(e, '불러오지 못했어요');
+        this.error = errorText(e, '불러오지 못했어요.');
       }
     } finally {
       if (revision === this.revision) this.loading = false;
     }
   }
 
-  set(data: T) {
+  set(data: T, at = Date.now()) {
     data = this.normalize(data);
     this.data = data;
-    this.at = Date.now();
+    this.at = at;
     writeCache(this.key, data, this.at);
   }
 
+  beginMutation() {
+    const generation = this.generation;
+    this.mutations += 1;
+    this.revision += 1;
+    this.pending = null;
+    this.loading = false;
+    let finished = false;
+    return () => {
+      if (finished || generation !== this.generation) return;
+      finished = true;
+      this.mutations -= 1;
+      this.revision += 1;
+      this.lastStart = 0;
+      if (!this.mutations && this.refreshAfterMutation) {
+        this.refreshAfterMutation = false;
+        void this.refresh();
+      }
+    };
+  }
+
   reset() {
+    this.generation += 1;
+    this.mutations = 0;
+    this.refreshAfterMutation = false;
     this.revision += 1;
     this.pending = null;
     this.lastStart = 0;
@@ -189,12 +242,24 @@ export class Resource<T> {
 }
 
 const MIN = 60_000;
-export const calendar = new Resource<CalendarData>('calendar', (force) => api.calendar(force), 5 * MIN, normalizeCalendar);
+let calendarSemesterDisplay: SemesterDisplay = 'current';
+export const calendar = new Resource<CalendarData>('calendar-current', async (force) => {
+  const data = await api.calendar(force, calendarSemesterDisplay);
+  await todos.refresh();
+  return data;
+}, 5 * MIN, normalizeCalendar);
+
+export function setCalendarSemesterDisplay(display: SemesterDisplay) {
+  if (calendarSemesterDisplay === display) return;
+  calendarSemesterDisplay = display;
+  calendar.setKey(`calendar-${display}`);
+  if (app.profile) void calendar.load();
+}
 export const seats = new Resource<SeatsData>('seats', () => api.seats(), MIN);
 export const seatSession = new Resource<{ session: SeatSession | null }>('seat-session', () => api.seatSession(), MIN);
 export const meals = new Resource<MealDay[]>('meals', () => api.meals(), 30 * MIN);
 export const lectures = new Resource<ActiveLectures>('lectures', () => api.activeLectures(), MIN / 2);
-export const attendanceReceipts = new Resource<AttendanceReceipt[]>('attendance-receipts-v1', () => api.attendanceReceipts(), 5_000);
+export const attendanceReceipts = new Resource<AttendanceReceipt[]>('attendance-receipts', () => api.attendanceReceipts(), 5_000);
 export const attendance = new Resource<AttendanceCourse[]>('attendance', () => api.attendanceStatus(), 10 * MIN);
 export const timetable = new Resource<Timetable>('timetable', (force) => api.timetable(force), 360 * MIN);
 

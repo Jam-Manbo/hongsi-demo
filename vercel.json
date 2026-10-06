@@ -12,6 +12,10 @@
     {
       "source": "/download/",
       "destination": "/index.html"
+    },
+    {
+      "source": "/download/:path*",
+      "destination": "/index.html"
     }
   ],
   "headers": [

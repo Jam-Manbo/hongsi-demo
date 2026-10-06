@@ -2,12 +2,11 @@ export type NotificationTarget =
   | { kind: 'item'; key: string }
   | { kind: 'todo'; id: number }
   | { kind: 'seat'; id: number }
-  | { kind: 'notices' };
+  | { kind: 'notices'; url?: string };
 export type NotificationIntent = { version: 1; account: string; target: NotificationTarget; at: number };
 export type Reminder = { key: string; at: number; title: string; body: string; target: NotificationTarget };
 export type Channel = 'seat' | 'due';
 export const ID_BASE: Record<Channel, number> = { seat: 7000, due: 8000 };
-export const isReminderId = (id: number) => Object.values(ID_BASE).some((base) => id >= base && id < base + 500);
 export type Permission = 'unknown' | 'granted' | 'denied' | 'default' | 'unsupported';
 export type ChannelStatus = { planned: number; scheduled: number; deferred: number; next: number | null; checkedAt: number | null; error: string };
 export const emptyStatus = (): ChannelStatus => ({ planned: 0, scheduled: 0, deferred: 0, next: null, checkedAt: null, error: '' });
@@ -17,7 +16,7 @@ export function parseIntent(value: unknown): NotificationIntent | null {
   if (!value || typeof value !== 'object') return null;
   const x = value as NotificationIntent, t = x.target;
   if (x.version !== 1 || typeof x.account !== 'string' || !x.account || x.account.length > 128 || !Number.isFinite(x.at) || !t) return null;
-  if (t.kind === 'notices') return x;
+  if (t.kind === 'notices' && (t.url === undefined || (typeof t.url === 'string' && t.url.length > 0 && t.url.length <= 2048))) return x;
   if (t.kind === 'item' && typeof t.key === 'string' && /^(assign|vod):\d+$/.test(t.key)) return x;
   if ((t.kind === 'todo' || t.kind === 'seat') && Number.isSafeInteger(t.id) && t.id > 0) return x;
   return null;

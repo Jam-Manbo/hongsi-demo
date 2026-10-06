@@ -8,6 +8,7 @@
   import { dayKey, dueDateTime, hourNow, todayKey } from '../lib/format';
   import { homeAgenda, type HomeEntry } from '../lib/home-agenda';
   import { settings } from '../lib/settings.svelte';
+  import { displayedTodos } from '../lib/todos.svelte';
   import { calendar, meals, seatSession, seats, timetable, todos } from '../lib/store.svelte';
   import { go, openSeats } from '../lib/ui.svelte';
   import type { CalendarItem, Todo } from '../lib/types';
@@ -36,7 +37,7 @@
 
   const colors = $derived(courseColors(calendar.data?.courses ?? []));
   const courseName = (id: number) => calendar.data?.courses.find((c) => c.id === id)?.name ?? '';
-  const agenda = $derived(homeAgenda(calendar.data?.items ?? [], todos.data ?? [], classWatch.now, settings.showUndatedAssignments));
+  const agenda = $derived(homeAgenda(calendar.data?.items ?? [], displayedTodos(), classWatch.now, settings.showUndatedAssignments));
   const agendaLoading = $derived((calendar.data === null && !calendar.error) || (todos.data === null && !todos.error));
   const agendaComplete = $derived(calendar.data !== null && todos.data !== null);
   const groups = $derived([
@@ -85,7 +86,7 @@
 
 <div class="page home">
   <section class="a-attend" aria-label="출석">
-  <h2 class="section-title">지금 출석 <button class="link" onclick={() => go('attendance')}>출결</button></h2>
+  <h2 class="section-title">빠른 출결 <button class="link" onclick={() => go('attendance')}>출결</button></h2>
   <CurrentAttendance showLabel={false} />
   </section>
 
@@ -100,7 +101,7 @@
           {#if agendaLoading}
             <Skeleton rows={group.id === 'today' ? 1 : 2} height={82} />
           {:else if !group.entries.length}
-            <EmptyState message={group.id === 'today' ? '오늘 마감할 일은 없어요' : '다가오는 일정이 없어요'} />
+            <EmptyState message={group.id === 'today' ? '오늘 마감할 일은 없어요.' : '다가오는 일정이 없어요.'} />
           {:else}
             <div class="list">
               {#each (expanded.includes(group.id) ? group.entries : group.entries.slice(0, group.limit)) as entry (entry.key)}
@@ -157,7 +158,7 @@
   {#if !meals.data}
     {#if meals.error}<LoadError resource={meals} what="학식을" stale={false} />{:else}<Skeleton rows={1} height={150} />{/if}
   {:else if !todayPlace}
-    <div class="empty card"><strong>오늘은 학식 메뉴가 없어요</strong>주말·공휴일에는 운영하지 않을 수 있어요</div>
+    <div class="empty card"><strong>오늘은 학식 메뉴가 없어요.</strong>주말·공휴일에는 운영하지 않을 수 있어요.</div>
   {:else}
     <div class="meals" class:swipe={isApp} bind:this={strip} onscroll={onStripScroll}>
       {#each todayPlace.meals as meal (meal.name)}
@@ -192,7 +193,7 @@
     <div>
       <AgendaItem item={entry.value} showDate color={colors.get(entry.value.courseId) ?? 'var(--text-3)'} course={courseName(entry.value.courseId)} onopen={(i) => detailKey = i.key} ontoggle={toggleDone} />
       {#if entry.value.kind === 'assignment' && entry.due !== null && entry.due * 1000 <= classWatch.now}
-        <p class="late-hint">{entry.value.lateUntil ? `늦은 제출 기한 ${dueDateTime(entry.value.lateUntil)} · 상세에서 확인` : '늦은 제출 가능 여부를 상세에서 확인해 주세요'}</p>
+        <p class="late-hint">{entry.value.lateUntil ? `지각 제출 마감 ${dueDateTime(entry.value.lateUntil)} · 상세에서 확인` : '지각 제출 가능 여부를 상세에서 확인해 주세요.'}</p>
       {/if}
     </div>
   {/if}
@@ -204,7 +205,7 @@
   course={detail ? courseName(detail.courseId) : ''}
   color={detail ? (colors.get(detail.courseId) ?? 'var(--text-3)') : ''}
   ontoggle={toggleDone}
-  subtodos={detail ? (todos.data ?? []).filter((t) => t.parentKey === detail.key) : []}
+  subtodos={detail ? displayedTodos().filter((t) => t.parentKey === detail.key) : []}
   onaddtodo={addTodo}
   oneditodo={editTodo}
 />

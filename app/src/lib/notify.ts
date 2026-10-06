@@ -2,7 +2,7 @@ import { isApp } from './api';
 import { toast } from './ui.svelte';
 import { onSessionChange, readUserData, sessionUser, writeUserData } from './session';
 import { ReminderScheduler, type NotificationDriver } from './notification-engine';
-import { parseIntent, type NotificationIntent, type Permission } from './notification-model';
+import { parseIntent, type Permission } from './notification-model';
 import { notificationPermission, notificationState as state } from './notification-state.svelte';
 export { notificationPermission } from './notification-state.svelte';
 export type { Reminder, Channel } from './notification-model';
@@ -11,8 +11,8 @@ export const mobileNotifications = isApp && (/Android|iPhone|iPad/i.test(navigat
 const ios = /iPhone|iPad/i.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
 const plugin = () => import('@choochmeque/tauri-plugin-notifications-api');
 const PENDING = 'hc:notification-intent';
-const PERMISSION_ASKED = 'hc:pref:notification-permission-asked-v2';
-const PERMISSION_INTRO = 'hc:pref:notification-permission-intro-v2';
+const PERMISSION_ASKED = 'hc:pref:notification-permission-asked';
+const PERMISSION_INTRO = 'hc:pref:notification-permission-intro';
 const deviceFlag = (key: string) => { try { return localStorage.getItem(key) === '1'; } catch { return false; } };
 const setDeviceFlag = (key: string) => { try { localStorage.setItem(key, '1'); } catch { } };
 
@@ -30,8 +30,8 @@ export function takeNotificationIntent() {
 }
 export function notificationToast(title: string, body: string, raw: unknown) {
   const intent = parseIntent(raw);
-  if (!intent || intent.account !== sessionUser()) return;
-  toast(`${title} · ${body}`, 'alarm', 8000, () => queueNotificationIntent(intent));
+  if (!state.enabled || !intent || intent.account !== sessionUser()) return;
+  toast(intent.target.kind === 'seat' || !body.trim() ? title : `${title} · ${body}`, 'alarm', 8000, () => queueNotificationIntent(intent));
 }
 
 const driver: NotificationDriver = {
@@ -52,10 +52,10 @@ const driver: NotificationDriver = {
   async pending() { return (await (await plugin()).pending()).map((p) => p.id); },
   async cancel(ids) { await (await plugin()).cancel(ids); },
   async send(id, reminder, intent, scheduled) {
-    if (intent.account !== sessionUser()) return;
+    if (!state.enabled || intent.account !== sessionUser()) return;
     if (isApp) {
       const n = await plugin();
-      if (intent.account !== sessionUser()) return;
+      if (!state.enabled || intent.account !== sessionUser()) return;
       await n.sendNotification({ id, title: reminder.title, body: reminder.body, extra: { intent: JSON.stringify(intent) }, autoCancel: true,
         ...(mobileNotifications && !ios ? { icon: 'ic_notification', iconColor: '#FF7A3D' } : {}),
         ...(scheduled ? { schedule: n.Schedule.at(new Date(reminder.at), false, true) } : {}) });
@@ -114,9 +114,13 @@ export async function acceptNotificationPermission() {
   resolve?.(true);
 }
 export const refreshNotifications = () => scheduler.refresh(true);
+export async function setNotificationsEnabled(enabled: boolean) {
+  state.enabled = scheduler.enabled = enabled;
+  await scheduler.refresh(true);
+}
 export async function setRemoteNotifications(remote: boolean) {
   state.remote = scheduler.remote = remote;
-  writeUserData('remote-active-v2', remote);
+  writeUserData('remote-active', remote);
   await scheduler.refresh(true);
 }
 export async function initNotifications() {
@@ -142,7 +146,7 @@ export async function initNotifications() {
 
 onSessionChange(() => {
   cancelNotificationPermission();
-  state.remote = scheduler.remote = readUserData('remote-active-v2', false);
+  state.remote = scheduler.remote = readUserData('remote-active', false);
   state.error = '';
   void scheduler.reset(sessionUser());
 });

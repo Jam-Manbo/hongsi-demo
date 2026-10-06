@@ -1,9 +1,14 @@
 <script lang="ts">
+  import { MediaQuery } from 'svelte/reactivity';
+  import { agendaEntries } from '../lib/agenda';
   import { isFinished } from '../lib/colors';
   import { dueKey, monthCells, todayKey } from '../lib/format';
+  import { horizontalSwipe } from '../lib/horizontal-swipe';
   import { todoKey } from '../lib/todos.svelte';
   import type { CalendarItem, Todo } from '../lib/types';
   import Icon from './Icon.svelte';
+  import Sheet from './Sheet.svelte';
+  import MonthWheel from './MonthWheel.svelte';
 
   let {
     year = $bindable(),
@@ -14,6 +19,7 @@
     names,
     todos = [],
     week = false,
+    collapse = 0,
     onpick,
     onexpand,
   }: {
@@ -25,11 +31,32 @@
     names: Map<number, string>;
     todos?: Todo[];
     week?: boolean;
+    collapse?: number;
     onpick?: (key: string, el: HTMLElement) => void;
     onexpand?: () => void;
   } = $props();
 
   const maxShow = 3;
+  const narrow = new MediaQuery('max-width: 767px');
+  const small = new MediaQuery('max-width: 374px');
+  let monthPickerOpen = $state(false);
+  let pickerYear = $state(0);
+  let pickerMonth = $state(1);
+
+  function openMonthPicker() {
+    pickerYear = year;
+    pickerMonth = month;
+    monthPickerOpen = true;
+  }
+
+  function chooseMonth() {
+    const lastDay = new Date(Date.UTC(pickerYear, pickerMonth, 0)).getUTCDate();
+    const day = Math.min(Number(selected.slice(8)), lastDay);
+    year = pickerYear;
+    month = pickerMonth;
+    selected = `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+    monthPickerOpen = false;
+  }
 
   const todosByDay = $derived.by(() => {
     const map = new Map<string, Todo[]>();
@@ -62,22 +89,38 @@
     return new Date(Date.UTC(y, m - 1, d));
   };
 
-  const cells = $derived.by(() => {
+  function pageCells(offset: number) {
     if (week) {
       const sel = toDate(selected);
-      const start = sel.getTime() - sel.getUTCDay() * DAY;
+      const start = sel.getTime() - sel.getUTCDay() * DAY + offset * 7 * DAY;
       return Array.from({ length: 7 }, (_, i) => {
         const d = new Date(start + i * DAY);
-        return { key: keyOf(d), inMonth: d.getUTCMonth() === sel.getUTCMonth() };
+        return { key: keyOf(d), inMonth: true };
       });
     }
-    const all = monthCells(year, month);
+    const date = new Date(Date.UTC(year, month - 1 + offset, 1));
+    const all = monthCells(date.getUTCFullYear(), date.getUTCMonth() + 1);
     const rows = [];
     for (let i = 0; i < all.length; i += 7) {
       const row = all.slice(i, i + 7);
       if (row.some((c) => c.inMonth)) rows.push(...row);
     }
     return rows;
+  }
+  const cells = $derived(pageCells(0));
+  const pages = $derived((narrow.current ? [-1, 0, 1] : [0]).map((offset) => ({ offset, cells: offset === 0 ? cells : pageCells(offset) })));
+  let pagesElement: HTMLDivElement | undefined = $state();
+  let selectedRowTop = $state(0);
+  $effect(() => {
+    cells;
+    selected;
+    if (!pagesElement) return;
+    const element = pagesElement;
+    const measure = () => { selectedRowTop = element.querySelector<HTMLElement>('.current .sel')?.offsetTop ?? 0; };
+    const observer = new ResizeObserver(measure);
+    observer.observe(element);
+    measure();
+    return () => observer.disconnect();
   });
   const today = $derived(todayKey());
 
@@ -130,14 +173,25 @@
   const weekTitle = $derived.by(() => {
     if (!week) return '';
     const [a, b] = [cells[0].key, cells[6].key].map((k) => k.split('-').map(Number));
-    return a[1] === b[1] ? `${a[1]}월 ${a[2]}일 – ${b[2]}일` : `${a[1]}월 ${a[2]}일 – ${b[1]}월 ${b[2]}일`;
+    return `${a[1]}월 ${a[2]}일 – ${b[1]}월 ${b[2]}일`;
+  });
+  const compactWeekTitle = $derived.by(() => {
+    if (!week) return '';
+    const [a, b] = [cells[0].key, cells[6].key].map((key) => key.split('-').map(Number));
+    return `${a[1]}/${a[2]}–${b[1]}/${b[2]}`;
   });
 </script>
 
-<div class="cal card" class:week>
+<div class="cal card" class:week use:horizontalSwipe={{ enabled: () => narrow.current, shift }}>
   <div class="head">
     <button class="icon-btn" onclick={() => shift(-1)} aria-label={week ? '이전 주' : '이전 달'}><Icon name="left" /></button>
-    <h2 aria-live="polite">{week ? weekTitle : `${year}년 ${month}월`}</h2>
+    <h2 aria-live="polite" aria-label={week ? weekTitle : undefined}>
+      {#if week}
+        {small.current ? compactWeekTitle : weekTitle}
+      {:else}
+        <button class="month-title" onclick={openMonthPicker} aria-label="{year}년 {month}월, 년·월 선택" aria-haspopup="dialog">{year}년 {month}월</button>
+      {/if}
+    </h2>
     <button class="icon-btn" onclick={() => shift(1)} aria-label={week ? '다음 주' : '다음 달'}><Icon name="right" /></button>
     {#if week}
       <button class="today-btn" onclick={() => onexpand?.()} aria-label="캘린더 펼치기">
@@ -147,13 +201,20 @@
       <button class="today-btn" onclick={goToday}>오늘</button>
     {/if}
   </div>
-  <div class="grid" role="group" aria-label={week ? weekTitle : `${year}년 ${month}월`}>
+  <div class="weekdays" aria-hidden="true">
     {#each ['일', '월', '화', '수', '목', '금', '토'] as w, i (w)}
       <div class="wd" class:sun={i === 0} class:sat={i === 6} aria-hidden="true">{w}</div>
     {/each}
-    {#each cells as cell, i (cell.key)}
+  </div>
+  <div class="calendar-window">
+    <div class="calendar-vertical" style:transform="translate3d(0, {-selectedRowTop * collapse}px, 0)">
+    <div class="calendar-pages" bind:this={pagesElement}>
+      {#each pages as page (page.offset)}
+  <div class="grid calendar-page" class:previous={page.offset === -1} class:next={page.offset === 1} class:current={page.offset === 0} inert={page.offset !== 0} aria-hidden={page.offset !== 0} role="group" aria-label={week ? weekTitle : `${year}년 ${month}월`}>
+    {#each page.cells as cell, i (cell.key)}
       {@const list = byDay.get(cell.key) ?? []}
       {@const tlist = todosByDay.get(cell.key) ?? []}
+      {@const entries = agendaEntries(list, tlist)}
       <button
         class="day"
         class:out={!cell.inMonth}
@@ -167,23 +228,15 @@
       >
         <span class="num">{Number(cell.key.slice(8))}</span>
         <span class="evs">
-          {#each list.slice(0, maxShow) as item (item.key)}
+          {#each entries.slice(0, maxShow) as entry (entry.key)}
             <span
               class="ev"
-              class:finished={isFinished(item)}
-              class:vod={item.kind === 'vod'}
-              style:--c={colors.get(item.courseId) ?? 'var(--text-3)'}
+              class:finished={entry.done}
+              class:todo={entry.kind === 'todo'}
+              class:vod={entry.kind === 'item' && entry.value.kind === 'vod'}
+              style:--c={entry.kind === 'todo' ? (entry.value.courseId === null ? 'var(--todo-neutral)' : (colors.get(entry.value.courseId) ?? 'var(--todo-neutral)')) : (colors.get(entry.value.courseId) ?? 'var(--text-3)')}
             >
-              <span class="t">{short(item)}</span>
-            </span>
-          {/each}
-          {#each tlist.slice(0, Math.max(0, maxShow - list.length)) as t (t.id)}
-            <span
-              class="ev todo"
-              class:finished={t.doneAt !== null}
-              style:--c={t.courseId === null ? 'var(--todo-neutral)' : (colors.get(t.courseId) ?? 'var(--todo-neutral)')}
-            >
-              <span class="t">{t.title}</span>
+              <span class="t">{entry.kind === 'todo' ? entry.value.title : short(entry.value)}</span>
             </span>
           {/each}
           {#if list.length + tlist.length > maxShow}<span class="more">+{list.length + tlist.length - maxShow}</span>{/if}
@@ -191,11 +244,23 @@
       </button>
     {/each}
   </div>
+      {/each}
+    </div>
+    </div>
+  </div>
 </div>
 
+<Sheet bind:open={monthPickerOpen} title="년·월 선택">
+  <MonthWheel bind:year={pickerYear} bind:month={pickerMonth} />
+  {#snippet footer()}<button class="btn btn-primary w1" onclick={chooseMonth}>확인</button>{/snippet}
+</Sheet>
+
 <style>
+  .month-title { min-height: 40px; font-weight: inherit; letter-spacing: inherit; }
+
   .cal {
     padding: 14px 10px 12px;
+    overflow-anchor: none;
   }
 
   .head {
@@ -224,7 +289,13 @@
     color: var(--text-2);
   }
 
-  .grid {
+  .calendar-window { overflow: hidden; }
+  .calendar-pages { position: relative; }
+  .calendar-page.previous, .calendar-page.next { position: absolute; top: 0; width: 100%; }
+  .calendar-page.previous { right: 100%; }
+  .calendar-page.next { left: 100%; }
+
+  .grid, .weekdays {
     display: grid;
     grid-template-columns: repeat(7, minmax(0, 1fr));
     gap: 2px;
@@ -257,8 +328,8 @@
     flex-direction: column;
     align-items: center;
     gap: 4px;
-    min-height: 58px;
-    padding: 6px 2px 4px;
+    min-height: 54px;
+    padding: 3px 2px 4px;
     border-radius: 12px;
     transition: background 0.15s;
   }
@@ -359,11 +430,20 @@
     gap: 3px;
   }
 
+  @media (max-width: 767px) {
+    .cal {
+      touch-action: pan-y pinch-zoom;
+    }
+
+    h2 { min-width: 0; flex: 1; white-space: nowrap; }
+    .today-btn { flex-shrink: 0; white-space: nowrap; padding-inline: 8px; }
+  }
+
   @media (min-width: 768px) {
     .cal:not(.week) .day {
       align-items: stretch;
-      min-height: 104px;
-      padding: 6px;
+      min-height: 100px;
+      padding: 3px 6px 6px;
     }
 
     .cal:not(.week) .num {
@@ -419,4 +499,8 @@
     }
   }
 
+  @media (max-width: 359px) {
+    h2 { font-size: 16px; }
+    .week h2 { font-size: 15px; }
+  }
 </style>

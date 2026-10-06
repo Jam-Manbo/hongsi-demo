@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { settings } from '../lib/settings.svelte';
   import { periodLabel } from '../lib/classwatch.svelte';
   import type { ClassSlot } from '../lib/types';
   import Popover from './Popover.svelte';
@@ -31,9 +32,10 @@
   const range = $derived.by(() => {
     const starts = slots.map(toMin);
     const ends = slots.map((s) => toMin(s) + s.periods.length * 60);
+    const fit = settings.timetableDisplay === 'fit' && slots.length > 0;
     return {
-      from: Math.min(9, ...starts.map((m) => Math.floor(m / 60))),
-      to: Math.max(18, ...ends.map((m) => Math.ceil(m / 60))),
+      from: Math.min(...(fit ? [] : [9]), ...starts.map((m) => Math.floor(m / 60))),
+      to: Math.max(...(fit ? [] : [18]), ...ends.map((m) => Math.ceil(m / 60))),
     };
   });
   const hours = $derived(Array.from({ length: range.to - range.from }, (_, i) => range.from + i));
@@ -72,7 +74,7 @@
     <div class="head" aria-hidden="true">
       <span class="corner"></span>
       {#each days as d (d)}
-        <span class="dh" class:today={d === today}>{DAYS[d]}</span>
+        <span class="dh">{DAYS[d]}</span>
       {/each}
     </div>
     <div class="body" style:--rows={hours.length}>
@@ -80,7 +82,7 @@
         {#each hours as h (h)}<span>{h}</span>{/each}
       </div>
       {#each days as d (d)}
-        <div class="col" class:today={d === today} role="group" aria-label="{DAYS[d]}요일{d === today ? ' (오늘)' : ''}">
+        <div class="col" role="group" aria-label="{DAYS[d]}요일{d === today ? ' (오늘)' : ''}">
           {#each byDay.get(d) ?? [] as s (s.name + s.start)}
             <button
               class="blk"
@@ -103,7 +105,7 @@
     </div>
   </div>
 {:else}
-  <div class="empty"><strong>이번 학기 시간표가 없어요</strong></div>
+  <div class="empty"><strong>이번 학기 시간표가 없어요.</strong></div>
 {/if}
 
 <Popover {anchor} bind:open={popOpen} placement="top" label="수업 정보">
@@ -140,7 +142,7 @@
     top: 0;
     z-index: 2;
     padding-bottom: 2px;
-    background: var(--surface);
+    background: var(--sheet-surface, var(--surface));
   }
 
   .dh {
@@ -152,11 +154,6 @@
     font-size: 12.5px;
     font-weight: 700;
     color: var(--text-3);
-  }
-
-  .dh.today {
-    background: var(--primary-weak);
-    color: var(--primary-text);
   }
 
   .body {
@@ -188,10 +185,6 @@
 
   .col:last-child {
     border-right: 1px solid var(--border);
-  }
-
-  .col.today {
-    background-color: color-mix(in srgb, var(--primary) 4%, transparent);
   }
 
   .blk {
