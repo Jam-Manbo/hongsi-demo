@@ -1,4 +1,4 @@
-import type { AccountPreferences, ActiveLecture, AttendanceCourse, AttendanceReceipt, CalendarData, CalendarItem, Course, MealDay, SeatsData, Timetable, Todo, SeatSession, Attachment, SubmissionJob } from '../src/lib/types';
+import type { AccountPreferences, ActiveLecture, AttendanceCourse, AttendanceReceipt, CalendarData, CalendarItem, Course, MealDay, SeatsData, Timetable, Todo, SeatSession, Attachment, SubmissionJob } from '../src/shared/types';
 
 export const PROFILE = { name: '사용자1', studentId: 'DEMO', department: '학과1', hasPicture: false };
 export const seconds = () => Math.floor(Date.now() / 1000);
@@ -7,8 +7,8 @@ export function dayAt(offset: number, hour = 23, minute = 59) {
   return Math.floor(Date.parse(`${today()}T00:00:00+09:00`) / 1000) + offset * 86400 + hour * 3600 + minute * 60;
 }
 const date = new Date(Date.now() + 9 * 3600_000);
-export const currentTerm = { year: date.getUTCFullYear(), semester: date.getUTCMonth() < 6 ? 1 : 2 };
-const previousTerm = currentTerm.semester === 1 ? { year: currentTerm.year - 1, semester: 2 } : { year: currentTerm.year, semester: 1 };
+export const currentTerm = { year: date.getUTCFullYear(), semester: date.getUTCMonth() < 6 ? 10 : 20 };
+const previousTerm = currentTerm.semester === 10 ? { year: currentTerm.year - 1, semester: 20 } : { year: currentTerm.year, semester: 10 };
 export const courses: Course[] = Array.from({ length: 8 }, (_, i) => ({ id: i + 1, name: i < 6 ? `과목${i + 1}` : `지난 학기 과목${i - 5}`, code: `DEMO-${i + 1}`, term: i < 6 ? currentTerm : previousTerm }));
 export const currentCourses = courses.filter(c => c.term === currentTerm);
 export const activeLecture = (): ActiveLecture => ({ key: `demo-attendance-${today()}`, name: courses[0].name, code: courses[0].code, time: '10:00' });
@@ -45,20 +45,26 @@ export function todoSeed(): Todo[] {
 }
 export function timetableSeed(): Timetable {
   const weekday = (new Date(Date.now() + 9 * 3600_000).getUTCDay() + 6) % 7;
-  return { slots: currentCourses.flatMap((c, i) => [{ code: c.code, name: c.name, weekday: i === 0 ? weekday : (weekday + Math.floor(i / 2)) % 5,
+  return { slots: currentCourses.filter(c => c.id !== 5).flatMap((c, i) => [{ code: c.code, name: c.name, weekday: i === 0 ? weekday : (weekday + Math.floor(i / 2)) % 5,
     start: `${10 + i % 3 * 2}:00`, periods: [2 + i % 3 * 2, 3 + i % 3 * 2], room: `강의실${i + 1}` }]) };
 }
 export function attendanceSeed(): AttendanceCourse[] {
   return currentCourses.map((c, i) => {
-    const weeks = Array.from({ length: 15 }, (_, w) => ({ week: w + 1, sessions: Array.from({ length: 2 }, (_, s) => {
-      const date = new Date((dayAt((w - 4) * 7 - 1, 0, 0)) * 1000 + 9 * 3600_000);
-      const kind = w > 3 ? 'planned' : w === 2 && i === 1 ? 'absent' : w === 1 && s === 0 && i === 2 ? 'late' : 'present';
-      return { date: `${date.getUTCMonth() + 1}/${date.getUTCDate()}`, kind, mark: { planned: '예정', absent: '결석', late: '지각', present: '출석' }[kind] };
-    }) }));
+    const cyber = c.id === 5;
+    const weeks: AttendanceCourse['weeks'] = Array.from({ length: 15 }, (_, w) => ({ week: w + 1,
+      sessions: Array.from({ length: cyber ? [7, 14].includes(w) ? 0 : 3 : 2 }, (_, s) => {
+        const end = dayAt((w - 4) * 7 + (cyber ? 2 : -1));
+        const date = new Date(end * 1000 + 9 * 3600_000);
+        const kind = cyber
+          ? w > 4 ? 'planned' : w === 4 ? 'none' : w === 2 && s === 2 ? 'absent' : w === 1 && s === 2 ? 'late' : 'present'
+          : w > 3 ? 'planned' : w === 2 && i === 1 ? 'absent' : w === 1 && s === 0 && i === 2 ? 'late' : 'present';
+        return { date: `${date.getUTCMonth() + 1}/${date.getUTCDate()}`, kind,
+          mark: { planned: '예정', none: '', absent: '결석', late: '지각', present: '출석' }[kind] };
+      }) }));
     const summary = { present: 0, late: 0, absent: 0, excused: 0, none: 0, planned: 0 };
-    for (const w of weeks) for (const s of w.sessions) summary[s.kind as keyof typeof summary]++;
-    if (i === 5) return { code: c.code!, name: c.name, published: false, notice: '출석부가 공개되지 않았어요.', weeks: [], summary: { present: 0, late: 0, absent: 0, excused: 0, none: 0, planned: 0 } };
-    return { code: c.code!, name: c.name, published: true, notice: null, weeks, summary } as AttendanceCourse;
+    for (const w of weeks) for (const s of w.sessions) if (s.kind !== 'other') summary[s.kind]++;
+    if (i === 5) return { cyber, code: c.code!, name: c.name, published: false, notice: '출석부가 공개되지 않았어요.', weeks: [], summary: { present: 0, late: 0, absent: 0, excused: 0, none: 0, planned: 0 } };
+    return { cyber, code: c.code!, name: c.name, published: true, notice: null, weeks, summary };
   });
 }
 export function seatsSeed(): SeatsData {

@@ -3,6 +3,7 @@ import { svelte } from '@sveltejs/vite-plugin-svelte';
 import { defineConfig } from 'vite';
 
 const pkg = JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')) as { version: string };
+const upstream = JSON.parse(readFileSync(new URL('../upstream.json', import.meta.url), 'utf8')) as { commit: string };
 const deployment = JSON.parse(readFileSync(new URL('../vercel.json', import.meta.url), 'utf8')) as { headers: { headers: { key: string; value: string }[] }[] };
 
 export default defineConfig({
@@ -17,7 +18,7 @@ export default defineConfig({
     },
   }, svelte()],
   clearScreen: false,
-  define: { __APP_VERSION__: JSON.stringify(pkg.version) },
+  define: { __APP_VERSION__: JSON.stringify(pkg.version), __APP_COMMIT__: JSON.stringify(upstream.commit) },
   server: { host: '127.0.0.1', port: 5174, strictPort: true },
   preview: { strictPort: true, headers: Object.fromEntries(deployment.headers[0].headers.map(h => [h.key, h.value])) },
   build: { target: 'es2022', outDir: 'dist' },

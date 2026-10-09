@@ -79,7 +79,7 @@ jobs:
       - name: Record deployed upstream commit
         if: steps.sync.outputs.deploy == 'true'
         run: |
-          git add README.md LICENSE app/src app/public app/package.json app/index.html app/tsconfig.json app/pnpm-lock.yaml upstream.json
+          git add LICENSE app/src app/public app/package.json app/index.html app/tsconfig.json app/svelte.config.js app/pnpm-lock.yaml upstream.json
           if ! git diff --cached --quiet; then
             git config user.name 'github-actions[bot]'
             git config user.email '41898282+github-actions[bot]@users.noreply.github.com'

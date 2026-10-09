@@ -1,44 +1,39 @@
 <script lang="ts">
   import { onMount, untrack } from 'svelte';
-  import { watchClock } from './lib/clock.svelte';
-  import { watchCalendarState } from './lib/calendar-sync.svelte';
-  import { watchAppUpdates } from './lib/app-update.svelte';
-  import { publishWidgetTheme, publishWidgets, widgetSnapshot, openWidgetIntent } from './lib/widgets';
-  import AppUpdate from './components/AppUpdate.svelte';
-  import NotificationPermission from './components/NotificationPermission.svelte';
-  import DoneConfirm from './components/DoneConfirm.svelte';
+  import { clock, watchClock } from './shared/state/clock.svelte';
+  import { watchCalendarState } from './features/calendar/calendar-sync.svelte';
+  import { watchAppUpdates } from './features/updates/app-update.svelte';
+  import { publishWidgetTheme, publishWidgets, widgetSnapshot, openWidgetIntent } from './platform/widgets';
+  import AppUpdate from './features/updates/AppUpdate.svelte';
+  import NotificationPermission from './features/notifications/NotificationPermission.svelte';
+  import DoneConfirm from './features/calendar/DoneConfirm.svelte';
   import DownloadPage from './pages/DownloadPage.svelte';
-  import { ApiError, api, isApp, native } from './lib/api';
-  import { isPending } from './lib/colors';
-  import { displayedTodos, isTodoPending } from './lib/todos.svelte';
-  import { errorText } from './lib/net.svelte';
-  import { syncSeatReminders } from './lib/seat.svelte';
-  import { syncDueReminders } from './lib/reminders';
-  import { initNotifications, notificationState, refreshNotifications, showFirstNotificationPermission, takeNotificationIntent } from './lib/notify';
-  import { enableBackgroundByDefault, refreshBackground, syncBackgroundPreferences } from './lib/background.svelte';
-  import { openNotification } from './lib/notification-navigation';
-  import { seatPrefs } from './lib/seat.svelte';
-  import { refreshState, refreshTab } from './lib/refresh.svelte';
-  import { settings, accountPreferences, watchAccountPreferences } from './lib/settings.svelte';
-  import {
-    app,
-    calendar,
-    endSession,
-    logoutSession,
-    startSession,
-    lectures,
-    seatSession,
-    todos,
-  } from './lib/store.svelte';
-  import { TABS, go, openSeats, route, toast } from './lib/ui.svelte';
-  import Avatar from './components/Avatar.svelte';
-  import ConnBanner from './components/ConnBanner.svelte';
-  import Icon from './components/Icon.svelte';
-  import Downloads from './components/Downloads.svelte';
-  import Notices from './components/Notices.svelte';
-  import ProfileSheet from './components/ProfileSheet.svelte';
-  import PullRefresh from './components/PullRefresh.svelte';
-  import Toasts from './components/Toasts.svelte';
+  import { ApiError, api, isApp, native } from './shared/api/api';
+  import { dayKey, dueKey } from './shared/utils/format';
+  import { displayedTodos } from './features/calendar/todos.svelte';
+  import { errorText } from './shared/api/net.svelte';
+  import { syncSeatReminders } from './features/seats/seat.svelte';
+  import { syncDueReminders } from './features/notifications/reminders';
+  import { initNotifications, notificationState, refreshNotifications, showFirstNotificationPermission, takeNotificationIntent } from './features/notifications/notify';
+  import { enableBackgroundByDefault, refreshBackground, syncBackgroundPreferences } from './features/notifications/background.svelte';
+  import { openNotification } from './features/notifications/notification-navigation';
+  import { seatPrefs } from './features/seats/seat.svelte';
+  import { refreshState, refreshTab } from './shared/state/refresh.svelte';
+  import { settings, accountPreferences, watchAccountPreferences } from './features/settings/settings.svelte';
+  import { app, endSession, logoutSession, startSession } from './features/auth/auth-state.svelte';
+  import { calendar } from './features/calendar/calendar-resources.svelte';
+  import { lectures, timetable, refreshTimetableForTerm } from './features/attendance/attendance-resources.svelte';
+  import { seatSession } from './features/seats/seat-resources.svelte';
+  import { todos } from './features/calendar/todo-resource.svelte';
+  import { TABS, go, openSeats, route, toast } from './shared/state/ui.svelte';
+  import Avatar from './shared/ui/Avatar.svelte';
+  import ConnBanner from './shared/ui/ConnBanner.svelte';
+  import Icon from './shared/ui/Icon.svelte';
+  import Downloads from './features/files/Downloads.svelte';
+  import Notices from './features/classroom/Notices.svelte';
+  import ProfileSheet from './features/settings/ProfileSheet.svelte';
+  import PullRefresh from './shared/ui/PullRefresh.svelte';
+  import Toasts from './shared/ui/Toasts.svelte';
   import AttendancePage from './pages/AttendancePage.svelte';
   import CalendarPage from './pages/CalendarPage.svelte';
   import Home from './pages/Home.svelte';
@@ -49,10 +44,10 @@
   const TITLES = { home: '홈', calendar: '캘린더', seats: '열람실', attendance: '출결', meals: '학식' } as const;
   const downloadPage = !isApp && ['/download', '/download/versions', '/download/ios'].includes(location.pathname.replace(/\/$/, ''));
 
-  const weekDue = $derived.by(() => {
-    const now = Date.now() / 1000;
-    const school = (calendar.data?.items ?? []).filter((i) => isPending(i, now) && i.due !== null && i.due - now < 7 * 86_400).length;
-    const personal = displayedTodos().filter((t) => isTodoPending(t, now) && t.due !== null && t.due - now < 7 * 86_400).length;
+  const today = $derived(dayKey(clock.now));
+  const todayDue = $derived.by(() => {
+    const school = (calendar.data?.items ?? []).filter((i) => !i.done && i.due !== null && dueKey(i.due) === today).length;
+    const personal = displayedTodos().filter((t) => t.doneAt === null && t.due !== null && dueKey(t.due) === today).length;
     return school + personal;
   });
   const attendOpen = $derived(lectures.at > Date.now() - 10 * 60_000 && (lectures.data?.items.length ?? 0) > 0);
@@ -62,6 +57,12 @@
   let booting = false;
 
   $effect(() => {
+    if (app.booting || app.loggingOut || !app.profile || !timetable.data || timetable.loading) return;
+    const term = calendar.data?.currentTerm;
+    untrack(() => refreshTimetableForTerm(term));
+  });
+
+  $effect(() => {
     if (!isApp || app.booting) return;
     void publishWidgetTheme(settings.theme).catch(() => {});
   });
@@ -69,7 +70,10 @@
   $effect(() => {
     if (!isApp || app.booting) return;
     const snapshot = widgetSnapshot();
-    if (!snapshot) { void publishWidgets(''); return; }
+    if (!snapshot) {
+      if (!bootError) void publishWidgets('');
+      return;
+    }
     const timer = setTimeout(() => { void publishWidgets(snapshot); }, 200);
     return () => clearTimeout(timer);
   });
@@ -77,9 +81,14 @@
   $effect(() => { if (!app.booting && app.profile) void untrack(openWidgetIntent); });
   onMount(() => {
     const open = () => { if (document.visibilityState === 'visible') void openWidgetIntent(); };
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+    if (isApp) void import('@tauri-apps/api/event').then(({ listen }) => listen('hongsi-widget', open)).then((stop) => {
+      if (disposed) stop(); else unlisten = stop;
+    }).catch(() => {});
     window.addEventListener('hongsi-widget', open);
     document.addEventListener('visibilitychange', open);
-    return () => { window.removeEventListener('hongsi-widget', open); document.removeEventListener('visibilitychange', open); };
+    return () => { disposed = true; unlisten?.(); window.removeEventListener('hongsi-widget', open); document.removeEventListener('visibilitychange', open); };
   });
 
   async function boot() {
@@ -110,7 +119,6 @@
     let disposed = false;
     let cleanup = () => {};
     const bootReady = boot();
-    // Native plugins must be ready; browser push messages need a listener during boot.
     const notificationReady = (isApp ? bootReady : Promise.resolve())
       .then(() => initNotifications())
       .then((fn) => { if (disposed) fn(); else cleanup = fn; });
@@ -237,7 +245,7 @@
   <main class="boot boot-error">
     <img src="/favicon.svg" alt="" width="56" height="56" />
     <strong>{bootError}</strong>
-    
+
     <button class="btn btn-primary" onclick={() => boot()}>다시 시도</button>
   </main>
 {:else if !app.profile}
@@ -259,7 +267,7 @@
               {#if t.id === 'attendance' && attendOpen}<i class="live-dot" aria-label="빠른 출결 가능"></i>{/if}
             </span>
             <span class="nav-label">{t.label}</span>
-            {#if t.id === 'calendar' && weekDue}<span class="count" aria-label="7일 안에 마감 {weekDue}개">{weekDue}</span>{/if}
+            {#if t.id === 'calendar' && todayDue}<span class="count" aria-label="오늘 미완료 마감 {todayDue}개">{todayDue}</span>{/if}
           </a>
         {/each}
         {#if !isApp}
@@ -317,6 +325,7 @@
         <button class="tab" aria-current={route.tab === t.id ? 'page' : undefined} onclick={() => t.id === 'seats' ? openSeats('T') : go(t.id)}>
           <span class="nav-ico">
             <Icon name={t.icon} size={23} stroke={route.tab === t.id ? 2.1 : 1.7} />
+            {#if t.id === 'calendar' && todayDue}<span class="count" aria-label="오늘 미완료 마감 {todayDue}개">{todayDue}</span>{/if}
             {#if t.id === 'attendance' && attendOpen}<i class="live-dot" aria-label="빠른 출결 가능"></i>{/if}
           </span>
           <span>{t.label}</span>
@@ -372,6 +381,7 @@
     height: 100dvh;
     display: grid;
     grid-template-columns: minmax(0, 1fr);
+    padding-inline: var(--safe-l) var(--safe-r);
   }
 
   .main-col {
@@ -406,7 +416,7 @@
     justify-content: space-between;
     gap: 0 12px;
     margin: 0 -16px 8px;
-    padding: calc(env(safe-area-inset-top, 0px) + 10px) 12px 10px 20px;
+    padding: calc(var(--safe-t) + 10px) 12px 10px 20px;
     background: color-mix(in srgb, var(--bg) 86%, transparent);
     backdrop-filter: saturate(1.4) blur(14px);
   }
@@ -456,6 +466,7 @@
     grid-template-columns: repeat(5, 1fr);
     height: calc(var(--tabbar-h) + var(--safe-b));
     padding-bottom: var(--safe-b);
+    padding-inline: var(--safe-l) var(--safe-r);
     background: color-mix(in srgb, var(--surface) 92%, transparent);
     backdrop-filter: saturate(1.4) blur(16px);
     border-top: 1px solid var(--border);
@@ -479,6 +490,27 @@
   .nav-ico {
     position: relative;
     display: grid;
+  }
+
+  .count {
+    min-width: 18px;
+    height: 18px;
+    padding: 0 5px;
+    border-radius: 999px;
+    background: var(--primary);
+    color: var(--on-primary);
+    font-size: 10.5px;
+    font-weight: 800;
+    line-height: 18px;
+    text-align: center;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .tab .count {
+    position: absolute;
+    top: -4px;
+    right: -2px;
+    box-shadow: 0 0 0 2px var(--surface);
   }
 
   .live-dot {
@@ -519,12 +551,12 @@
     }
 
     .content {
-      padding: 0 28px 48px;
+      padding: 0 28px calc(var(--safe-b) + 48px);
     }
 
     .topbar {
       margin: 0 -28px 12px;
-      padding: 18px 20px 12px 28px;
+      padding: calc(var(--safe-t) + 18px) 20px 12px 28px;
     }
 
     .page-title {
@@ -545,11 +577,16 @@
       align-items: center;
       gap: 6px;
       height: 100%;
-      padding: 18px 8px 16px;
+      min-height: 0;
+      padding: calc(var(--safe-t) + 18px) 8px calc(var(--safe-b) + 16px);
       background: var(--surface);
       border-right: 1px solid var(--border);
       overflow-y: auto;
       overscroll-behavior: none;
+    }
+
+    .side > * {
+      flex-shrink: 0;
     }
 
     .brand {
@@ -601,21 +638,10 @@
       color: var(--primary-text);
     }
 
-    .count {
+    .side .count {
       position: absolute;
       top: 4px;
       right: 10px;
-      min-width: 18px;
-      height: 18px;
-      padding: 0 5px;
-      border-radius: 999px;
-      background: var(--primary);
-      color: var(--on-primary);
-      font-size: 10.5px;
-      font-weight: 800;
-      line-height: 18px;
-      text-align: center;
-      font-variant-numeric: tabular-nums;
     }
 
     .account {
@@ -638,12 +664,12 @@
     }
 
     .content {
-      padding: 0 40px 20px;
+      padding: 0 40px calc(var(--safe-b) + 20px);
     }
 
     .topbar {
       margin: 0 -40px 16px;
-      padding: 18px 32px 14px 40px;
+      padding: calc(var(--safe-t) + 18px) 32px 14px 40px;
     }
 
     .page-title {
@@ -653,7 +679,7 @@
     .side {
       align-items: stretch;
       gap: 0;
-      padding: 22px 14px 14px;
+      padding: calc(var(--safe-t) + 22px) 14px calc(var(--safe-b) + 14px);
     }
 
     .brand {
@@ -692,7 +718,7 @@
       font-weight: 750;
     }
 
-    .count {
+    .side .count {
       position: static;
       margin-left: auto;
       background: var(--primary);

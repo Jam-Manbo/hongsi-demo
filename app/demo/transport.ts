@@ -2,7 +2,7 @@ import { demoRequest, demoFile } from './api';
 import { ApiError } from './errors';
 import { auth } from './storage';
 import { publicResponse } from './releases';
-import type { FileSource } from '../src/lib/types';
+import type { FileSource } from '../src/shared/types';
 
 export function fileSource(path: string): FileSource | null {
   let m = /^\/api\/files\/(\d+)\/(\d+)$/.exec(path);

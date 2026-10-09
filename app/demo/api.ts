@@ -1,4 +1,4 @@
-import type { Attachment, AttendanceReceipt, CalendarState, FileSource, SeatPeriod, SubmissionJob, SubmissionView, TodoInput } from '../src/lib/types';
+import type { Attachment, AttendanceReceipt, CalendarState, FileSource, SeatPeriod, SubmissionJob, SubmissionView, TodoInput } from '../src/shared/types';
 import { PROFILE, activeLecture, courses, currentCourses, currentTerm, today, seconds, finished, mealsSeed, seatsSeed, timetableSeed, sampleFile } from './data';
 import { auth, data, login, logout, persist } from './storage';
 import { pushRequest } from './push';

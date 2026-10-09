@@ -5,7 +5,7 @@ const AUTH = 'hongsi-demo:auth';
 const CACHE_REVISION = 'hongsi-demo:response-cache-revision';
 const HOUR = 3_600_000;
 const hour = () => Math.floor(Date.now() / HOUR);
-const revision = () => `5:${hour()}`;
+const revision = () => `6:${hour()}`;
 let memory: DemoData | null = null;
 let memoryAuth: { remembered: boolean } | null = null;
 function read(storage: Storage, key: string) { try { return JSON.parse(storage.getItem(key) ?? 'null'); } catch { return null; } }
@@ -73,7 +73,7 @@ export function startHourlyReset() {
   window.addEventListener('pageshow', refresh);
   document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') refresh(); });
   window.addEventListener('storage', event => {
-    if (event.key === CACHE_REVISION && event.newValue && event.newValue !== `5:${openedHour}`) refresh();
+    if (event.key === CACHE_REVISION && event.newValue && event.newValue !== `6:${openedHour}`) refresh();
   });
   refresh();
 }
